@@ -25,6 +25,9 @@ jobs:
         run: rebar3 compile
       - name: Run tests
         run: rebar3 ct
-      - name: run dialyzer check
+      - name: Dialyzer
         run: rebar3 dialyzer
+        if: ${{ matrix.otp == '24.1' }}
+      - name: Xref
+        run: rebar3 xref
         if: ${{ matrix.otp == '24.1' }}
