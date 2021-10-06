@@ -7,6 +7,7 @@
     stdlib
    ]},
   {env,[]},
+  {doc, "doc"},
   {modules, []},
   {licenses, ["Apache 2.0"]},
   {links, [{"GitHub", "https://github.com/esl/segmented_cache/"}]}
