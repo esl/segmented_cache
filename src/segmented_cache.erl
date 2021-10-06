@@ -3,8 +3,8 @@
 %%
 %% It uses a coarse-grained strategy, that is, it keeps a set of ETS tables that
 %% are periodically rotated, and on rotation, the last table is cleared. It supports
-%% diverse eviction strategies, it takes advantage of modern OTP functionallity like
-%% persistent_term or atomics, and it is instrumented with telemetry.
+%% `fifo' and `lru' eviction strategies, it takes advantage of modern OTP functionallity like
+%% persistent_term and atomics, and it is instrumented with telemetry.
 %%
 %% The cache spawns a process cleaner responsible for periodically cleaning and rotating
 %% the tables. It also automatically creates a pg group to sync caches in a cluster.
@@ -58,7 +58,9 @@
 %%====================================================================
 %% API
 %%====================================================================
+
 %% @doc Check if Key is cached
+%%
 %% Raises telemetry event
 %%      name: [?MODULE, request]
 %%      measurements: #{hit => boolean()}
@@ -68,7 +70,8 @@ is_member(Name, Key) when is_atom(Name) ->
     telemetry:execute([?MODULE, request], #{hit => Value =:= true}),
     Value.
 
-%% @doc Get the entry for Key in cached
+%% @doc Get the entry for Key in cache
+%%
 %% Raises telemetry event
 %%      name: [?MODULE, request]
 %%      measurements: #{hit => boolean()}
@@ -79,22 +82,25 @@ get_entry(Name, Key) when is_atom(Name) ->
     Value.
 
 %% @doc Add an entry to the first table in the segments.
+%%
 %% Possible race conditions:
-%%  * Two writers: another process might attempt to put a record at the same time. It this case,
+%%  <li> Two writers: another process might attempt to put a record at the same time. It this case,
 %%      both writers will attempt `ets:insert_new', resulting in only one of them succeeding.
 %%      The one that fails, will retry three times a `compare_and_swap', attempting to merge the
-%%      values and ensuring no data is lost.
-%%  * One worker and the cleaner: there's a chance that by the time we insert in the ets table,
+%%      values and ensuring no data is lost.</li>
+%%  <li> One worker and the cleaner: there's a chance that by the time we insert in the ets table,
 %%      this table is not the first anymore because the cleaner has taken action and pushed it
-%%      behind.
-%%  * Two writers and the cleaner: a mix of the previous, it can happen that two writers can
+%%      behind.</li>
+%%  <li> Two writers and the cleaner: a mix of the previous, it can happen that two writers can
 %%      attempt to put a record at the same time, but exactly in-between, the cleaner rotates the
 %%      tables, resulting in the first writter inserting in the table that immediately becomes the
 %%      second, and the latter writter inserting in the recently treated as first, shadowing the
-%%      previous.
+%%      previous.</li>
+%%
 %% To treat the data race with the cleaner, after a successful insert, we re-check the index,
 %%      and if it has changed, we restart the whole operation again: we can be sure that no more
 %%      rotations will be triggered in a while, so the second round will be final.
+%%
 %% Strategy considerations: under a fifo strategy, no other writes can happen, but under a lru
 %%      strategy, many other workers might attemp to move a record forward. In this case, the
 %%      forwarding movement doesn't modify the record, and therefore the `compare_and_swap'
@@ -142,6 +148,7 @@ delete_pattern(Name, Pattern) when is_atom(Name) ->
 %%====================================================================
 
 %% @doc Start a cache entity in the local node
+%%
 %% `Name' must be an atom. Then the cache will be identified by the pair `{?MODULE, Name}',
 %% and an entry in persistent_term will be created and the worker will join a pg group of
 %% the same name.
