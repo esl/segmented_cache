@@ -18,6 +18,7 @@
 -export([is_member/2]).
 -export([get_entry/2]).
 -export([put_entry/3]).
+-export([merge_entry/3]).
 -export([delete_entry/2]).
 -export([delete_pattern/2]).
 
@@ -103,6 +104,28 @@ get_entry(Name, Key) when is_atom(Name) ->
 put_entry(Name, Key, Value) when is_atom(Name) ->
     SegmentRecord = persistent_term:get({?MODULE, Name}),
     put_entry_front(SegmentRecord, Key, Value).
+
+%% @doc Merge a new entry into an existing one, or add it at the front if none is found.
+%%
+%% Race conditions considerations:
+%%  <li> Two writers: `compare_and_swap' will ensure they both succeed sequentially</li>
+%%  <li> Any writers and the cleaner: under fifo, the writer modifies the record in place
+%%      and doesn't need to be concerned with rotation. Under lru, the same considerations
+%%      than for a `put_entry_front' apply.</li>
+-spec merge_entry(name(), term(), term()) -> boolean().
+merge_entry(Name, Key, Value) when is_atom(Name) ->
+    SegmentRecord = persistent_term:get({?MODULE, Name}),
+    F = fun(EtsSegment, KKey) ->
+                MergerFun = SegmentRecord#segmented_cache.merger_fun,
+                case compare_and_swap(3, EtsSegment, KKey, Value, MergerFun) of
+                    true -> {stop, true};
+                    false -> {continue, false}
+                end
+        end,
+    case iterate_fun_in_tables(Name, Key, F) of
+        true -> true;
+        false -> put_entry_front(SegmentRecord, Key, Value)
+    end.
 
 -spec delete_entry(name(), term()) -> true.
 delete_entry(Name, Key) when is_atom(Name) ->
