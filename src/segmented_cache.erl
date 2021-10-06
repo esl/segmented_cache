@@ -265,8 +265,7 @@ apply_strategy(lru, _CurrentIndex, FoundIndex, Key, SegmentRecord) ->
     Segments = SegmentRecord#segmented_cache.segments,
     FoundInSegment = element(FoundIndex, Segments),
     try [{_, Value}] = ets:lookup(FoundInSegment, Key),
-        put_entry_front(SegmentRecord, Key, Value),
-        ets:delete(FoundInSegment, Key)
+        put_entry_front(SegmentRecord, Key, Value)
     catch _:_ -> false
     end.
 
