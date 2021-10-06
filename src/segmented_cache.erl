@@ -79,33 +79,30 @@ get_entry(Name, Key) when is_atom(Name) ->
 
 %% @doc Add an entry to the first table in the segments.
 %% Possible race conditions:
-%%  * With the cleaner process: there's a chance that by the time we insert in the ets table,
-%%      this table is not the first anymore because the cleaner has taken action and pushed it
-%%      behind. That's acceptable, worst case this record will live a segment less than expected.
-%%  * With other writters: another process might attempt to put a record at the same time. It this
-%%      case, both writers will attempt `ets:insert_new', resulting in only one of them succeeding.
+%%  * Two writers: another process might attempt to put a record at the same time. It this case,
+%%      both writers will attempt `ets:insert_new', resulting in only one of them succeeding.
 %%      The one that fails, will retry three times a `compare_and_swap', attempting to merge the
 %%      values and ensuring no data is lost.
-%%  * Two writters and the cleaner: a mix of the previous, it can happen that two writers can
+%%  * One worker and the cleaner: there's a chance that by the time we insert in the ets table,
+%%      this table is not the first anymore because the cleaner has taken action and pushed it
+%%      behind.
+%%  * Two writers and the cleaner: a mix of the previous, it can happen that two writers can
 %%      attempt to put a record at the same time, but exactly in-between, the cleaner rotates the
 %%      tables, resulting in the first writter inserting in the table that immediately becomes the
-%%      second, and the latter writter inserting in the recently treated as first. This might result
-%%      in data loss, when the record of the first writter will be not merged and loss behind. This
-%%      edge-case is (hopefully) statistically speaking unlikely enough to be considered acceptable,
-%%      as soon enough a third writter will just retry with the metadata that wanted to be added.
+%%      second, and the latter writter inserting in the recently treated as first, shadowing the
+%%      previous.
+%% To treat the data race with the cleaner, after a successful insert, we re-check the index,
+%%      and if it has changed, we restart the whole operation again: we can be sure that no more
+%%      rotations will be triggered in a while, so the second round will be final.
 %% Strategy considerations: under a fifo strategy, no other writes can happen, but under a lru
 %%      strategy, many other workers might attemp to move a record forward. In this case, the
-%%      forwarding movement does't modify the record, and therefore the `compare_and_swap'
+%%      forwarding movement doesn't modify the record, and therefore the `compare_and_swap'
 %%      operation should succeed at once; then, once the record is in the front, all other workers
 %%      shouldn't be attempting to move it.
 -spec put_entry(name(), term(), term()) -> boolean().
 put_entry(Name, Key, Value) when is_atom(Name) ->
     SegmentRecord = persistent_term:get({?MODULE, Name}),
-    MergerFun = SegmentRecord#segmented_cache.merger_fun,
-    Segments = SegmentRecord#segmented_cache.segments,
-    Index = atomics:get(SegmentRecord#segmented_cache.index, 1),
-    FrontSegment = element(Index, Segments),
-    put_entry_front(FrontSegment, {Key, Value}, MergerFun).
+    put_entry_front(SegmentRecord, Key, Value).
 
 -spec delete_entry(name(), term()) -> true.
 delete_entry(Name, Key) when is_atom(Name) ->
@@ -250,7 +247,7 @@ send_to_group(Name, Msg) ->
 %% attempt to reinsert it.
 %% Concurrency considerations:
 %%  * Two workers moving the record front: they would both be moving the same record, so the
-%%      insert operation shuold have an idempotent merge and the insert would succeed easily.
+%%      insert operation should have an idempotent merge and the insert would succeed easily.
 %%  * One worker moving the record front, another worker putting the same record front: same
 %%      consideration, the merge strategy will make one succeed after the other.
 %%  * Two workers moving front and the cleaner: the cleaner can rotate the tables just so that
@@ -260,26 +257,24 @@ send_to_group(Name, Msg) ->
 %%  * One worker pushes, one inserts new, and the cleaner: with the cleaner rotating the tables
 %%      in between, the two workers would be operating on different tables and therefore the record
 %%      that gets inserted on the second table would be shadowed and lost.
-apply_strategy(fifo, _CurrentIndex, _FoundIndex, _Segments, _Key, _MergerFun) ->
+apply_strategy(fifo, _CurrentIndex, _FoundIndex, _Key, _SegmentRecord) ->
     ok;
-apply_strategy(lru, CurrentIndex, CurrentIndex, _Segments, _Key, _MergerFun) ->
+apply_strategy(lru, CurrentIndex, CurrentIndex, _Key, _SegmentRecord) ->
     ok;
-apply_strategy(lru, CurrentIndex, FoundIndex, Segments, Key, MergerFun) ->
+apply_strategy(lru, _CurrentIndex, FoundIndex, Key, SegmentRecord) ->
+    Segments = SegmentRecord#segmented_cache.segments,
     FoundInSegment = element(FoundIndex, Segments),
-    FrontSegment = element(CurrentIndex, Segments),
-    try [Entry] = ets:lookup(FoundInSegment, Key),
-        put_entry_front(FrontSegment, Entry, MergerFun),
+    try [{_, Value}] = ets:lookup(FoundInSegment, Key),
+        put_entry_front(SegmentRecord, Key, Value),
         ets:delete(FoundInSegment, Key)
     catch _:_ -> false
     end.
 
--spec iterate_fun_in_tables(name(), T, IterativeFun) -> term() when
-      T :: term(), IterativeFun :: iterative_fun(T).
+-spec iterate_fun_in_tables(name(), Key, IterativeFun) -> term() when
+      Key :: term(), IterativeFun :: iterative_fun(Key).
 iterate_fun_in_tables(Name, Key, IterativeFun) ->
     SegmentRecord = persistent_term:get({?MODULE, Name}),
-    Strategy = SegmentRecord#segmented_cache.strategy,
     Segments = SegmentRecord#segmented_cache.segments,
-    MergerFun = SegmentRecord#segmented_cache.merger_fun,
     Size = tuple_size(Segments),
     CurrentIndex = atomics:get(SegmentRecord#segmented_cache.index, 1),
     LastTableToCheck = case CurrentIndex of
@@ -290,7 +285,8 @@ iterate_fun_in_tables(Name, Key, IterativeFun) ->
         {not_found, Value} ->
             Value;
         {FoundIndex, Value} ->
-            apply_strategy(Strategy, CurrentIndex, FoundIndex, Segments, Key, MergerFun),
+            Strategy = SegmentRecord#segmented_cache.strategy,
+            apply_strategy(Strategy, CurrentIndex, FoundIndex, Key, SegmentRecord),
             Value
     end.
 
@@ -354,27 +350,47 @@ default_merger_fun(_OldValue, NewValue) ->
     NewValue.
 
 %% @private
-%% @doc Atomically compare_and_swap an entry, attempt three times
--spec put_entry_front(ets:tid(), {Key, Value}, merger_fun(Value)) -> boolean() when
-      Key :: term(), Value :: term().
-put_entry_front(FrontSegment, Entry, MergerFun) ->
-    case ets:insert_new(FrontSegment, Entry) of
-        true -> true;
-        false -> compare_and_swap(3, FrontSegment, Entry, MergerFun)
+%% @doc Atomically compare_and_swap an entry, attempt three times, post-check front insert
+-spec put_entry_front(#segmented_cache{}, term(), term()) -> boolean().
+put_entry_front(SegmentRecord, Key, Value) ->
+    Atomic = SegmentRecord#segmented_cache.index,
+    Index = atomics:get(Atomic, 1),
+    Segments = SegmentRecord#segmented_cache.segments,
+    FrontSegment = element(Index, Segments),
+    Entry = {Key, Value},
+    Inserted = case ets:insert_new(FrontSegment, Entry) of
+                   true -> true;
+                   false ->
+                       MergerFun = SegmentRecord#segmented_cache.merger_fun,
+                       compare_and_swap(3, FrontSegment, Key, Value, MergerFun)
+               end,
+    MaybeMovedIndex = atomics:get(Atomic, 1),
+    case post_insert_check_should_retry(Inserted, Index, MaybeMovedIndex) of
+        false -> Inserted;
+        true -> put_entry_front(SegmentRecord, Key, Value)
     end.
 
+-spec post_insert_check_should_retry(boolean(), integer(), integer()) -> boolean().
+% Table index didn't move, insert is still in the front
+post_insert_check_should_retry(true, Index, Index) -> false;
+% Insert succeded but the table is not the first anymore, retry,
+% rotation will not happen again in a long while
+post_insert_check_should_retry(true, _, _) -> true;
+% Insert failed, so it doesn't matter, just abort
+post_insert_check_should_retry(false, _, _) -> false.
+
 %% @private
--spec compare_and_swap(pos_integer(), ets:tid(), {Key, Value}, merger_fun(Value)) -> boolean() when
-      Key :: term(), Value :: term().
-compare_and_swap(0, _EtsSegment, _Entry, _MergerFun) ->
+-spec compare_and_swap(pos_integer(), ets:tid(), Key, Value, merger_fun(Value)) ->
+    boolean() when Key :: term(), Value :: term().
+compare_and_swap(0, _EtsSegment, _Key, _Value, _MergerFun) ->
     false;
-compare_and_swap(Attempts, EtsSegment, {Key, Value}, MergerFun) ->
+compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
     case ets:lookup(EtsSegment, Key) of
         [{_, OldValue}] ->
             NewValue = MergerFun(OldValue, Value),
             case ets:select_replace(EtsSegment, [{{Key, OldValue}, [], [{const, {Key, NewValue}}]}]) of
                 1 -> true;
-                0 -> compare_and_swap(Attempts - 1, EtsSegment, {Key, Value}, MergerFun)
+                0 -> compare_and_swap(Attempts - 1, EtsSegment, Key, Value, MergerFun)
             end;
         [] -> false
     end.
