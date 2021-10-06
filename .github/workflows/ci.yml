@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: OTP ${{matrix.otp}}
+    strategy:
+      matrix:
+        otp: ['24.1', '23.3']
+    runs-on: 'ubuntu-20.04'
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          rebar3-version: '3.17.0'
+      - name: Compile project
+        run: rebar3 compile
+      - name: Run tests
+        run: rebar3 ct
+      - name: run dialyzer check
+        run: rebar3 dialyzer
+        if: ${{ matrix.otp == '24.1' }}
