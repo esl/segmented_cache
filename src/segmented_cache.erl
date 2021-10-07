@@ -279,7 +279,8 @@ purge_last_segment_and_rotate(#cache_state{name = Name}) ->
                end,
     TableToClear = element(NewIndex, Segments),
     ets:delete_all_objects(TableToClear),
-    atomics:put(SegmentRecord#segmented_cache.index, 1, NewIndex).
+    atomics:put(SegmentRecord#segmented_cache.index, 1, NewIndex),
+    NewIndex.
 
 send_to_group(Name, Msg) ->
     Pids = pg:get_members(Name) -- pg:get_local_members(Name),
@@ -305,9 +306,9 @@ send_to_group(Name, Msg) ->
 %%      in between, the two workers would be operating on different tables and therefore the record
 %%      that gets inserted on the second table would be shadowed and lost.
 apply_strategy(fifo, _CurrentIndex, _FoundIndex, _Key, _SegmentRecord) ->
-    ok;
+    false;
 apply_strategy(lru, CurrentIndex, CurrentIndex, _Key, _SegmentRecord) ->
-    ok;
+    false;
 apply_strategy(lru, _CurrentIndex, FoundIndex, Key, SegmentRecord) ->
     Segments = SegmentRecord#segmented_cache.segments,
     FoundInSegment = element(FoundIndex, Segments),
