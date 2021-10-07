@@ -1,13 +1,7 @@
 %%%-------------------------------------------------------------------
 %% @doc `segmented_cache' is a key/value pairs cache library implemented in rotating segments.
 %%
-%% It uses a coarse-grained strategy, that is, it keeps a set of ETS tables that
-%% are periodically rotated, and on rotation, the last table is cleared. It supports
-%% `fifo' and `lru' eviction strategies, it takes advantage of modern OTP functionallity like
-%% persistent_term and atomics, and it is instrumented with telemetry.
-%%
-%% The cache spawns a process cleaner responsible for periodically cleaning and rotating
-%% the tables. It also automatically creates a pg group to sync caches in a cluster.
+%% For more information, see the README, and the function documentation.
 %% @end
 %%%-------------------------------------------------------------------
 -module(segmented_cache).
