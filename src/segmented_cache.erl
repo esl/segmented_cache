@@ -66,22 +66,28 @@
 %%
 %% Raises telemetry event
 %%      name: [?MODULE, request]
-%%      measurements: #{hit => boolean()}
+%%      measurements: #{hit => boolean(), time => microsecond()}
 -spec is_member(name(), term()) -> boolean().
 is_member(Name, Key) when is_atom(Name) ->
+    T1 = erlang:monotonic_time(),
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:is_member_fun/2),
-    telemetry:execute([?MODULE, request], #{hit => Value =:= true}),
+    T2 = erlang:monotonic_time(),
+    Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
+    telemetry:execute([?MODULE, request], (measurements())#{time := Time, hit := Value =:= true}),
     Value.
 
 %% @doc Get the entry for Key in cache
 %%
 %% Raises telemetry event
 %%      name: [?MODULE, request]
-%%      measurements: #{hit => boolean()}
+%%      measurements: #{hit => boolean(), time => microsecond()}
 -spec get_entry(name(), term()) -> term() | not_found.
 get_entry(Name, Key) when is_atom(Name) ->
+    T1 = erlang:monotonic_time(),
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:get_entry_fun/2),
-    telemetry:execute([?MODULE, request], #{hit => Value =/= not_found}),
+    T2 = erlang:monotonic_time(),
+    Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
+    telemetry:execute([?MODULE, request], (measurements())#{time := Time, hit := Value =/= not_found}),
     Value.
 
 %% @doc Add an entry to the first table in the segments.
@@ -207,6 +213,7 @@ assert_parameters(Opts) when is_map(Opts) ->
                {seconds, S} -> timer:seconds(S);
                {minutes, M} -> timer:minutes(M);
                {hours, H} -> timer:hours(H);
+               T when is_integer(T) -> timer:minutes(T);
                T -> T
            end,
     true = (TTL =:= infinity) orelse (is_integer(TTL) andalso N > 0),
@@ -440,3 +447,7 @@ compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
             end;
         [] -> false
     end.
+
+measurements() ->
+    #{hit => undefined,
+      time => undefined}.
