@@ -253,6 +253,7 @@ handle_info(_Msg, State) ->
 
 %% @private
 terminate(_Reason, #cache_state{name = Name, timer_ref = TimerRef}) ->
+    pg:leave(Name, self()),
     erlang:cancel_timer(TimerRef),
     persistent_term:erase({?MODULE, Name}),
     ok.
@@ -372,7 +373,7 @@ is_member_fun(EtsSegment, Key) ->
 -spec get_entry_fun(ets:tid(), term()) -> {continue | stop, not_found | term()}.
 get_entry_fun(EtsSegment, Key) ->
     case ets:lookup(EtsSegment, Key) of
-        [{_, Value}] -> {stop, [Value]};
+        [{_, Value}] -> {stop, Value};
         [] -> {continue, not_found}
     end.
 
@@ -402,8 +403,7 @@ put_entry_front(SegmentRecord, Key, Value) ->
     Index = atomics:get(Atomic, 1),
     Segments = SegmentRecord#segmented_cache.segments,
     FrontSegment = element(Index, Segments),
-    Entry = {Key, Value},
-    Inserted = case ets:insert_new(FrontSegment, Entry) of
+    Inserted = case ets:insert_new(FrontSegment, {Key, Value}) of
                    true -> true;
                    false ->
                        MergerFun = SegmentRecord#segmented_cache.merger_fun,
