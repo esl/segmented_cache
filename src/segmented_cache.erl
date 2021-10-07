@@ -23,6 +23,9 @@
 -export([delete_pattern/2]).
 
 %% gen_server callbacks
+-export([start/1]).
+-export([start/2]).
+-export([start_link/1]).
 -export([start_link/2]).
 -export([init/1]).
 -export([handle_call/3]).
@@ -158,6 +161,18 @@ delete_pattern(Name, Pattern) when is_atom(Name) ->
 %%      `ttl' is the live, in minutes, of _each_ segment. Default is `480', i.e., 8 hours.
 %%      `merger_fun' is a function that, given a conflict, takes in order the old and new values and
 %%          applies a merging strategy. See the `merger_fun/1' type
+-spec start(name()) -> {ok, pid()}.
+start(Name) when is_atom(Name) ->
+    start(Name, #{}).
+
+-spec start(name(), opts()) -> {ok, pid()}.
+start(Name, Opts) when is_atom(Name), is_map(Opts) ->
+    gen_server:start(?MODULE, [Name, Opts], []).
+
+-spec start_link(name()) -> {ok, pid()}.
+start_link(Name) when is_atom(Name) ->
+    start_link(Name, #{}).
+
 -spec start_link(name(), opts()) -> {ok, pid()}.
 start_link(Name, Opts) when is_atom(Name), is_map(Opts) ->
     gen_server:start_link(?MODULE, [Name, Opts], []).
