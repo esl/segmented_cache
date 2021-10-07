@@ -43,7 +43,7 @@
 -type iterative_fun(Term) :: fun((ets:tid(), Term) -> {continue | stop, not_found | term()}).
 -type opts() :: #{strategy => strategy(),
                   segment_num => non_neg_integer(),
-                  ttl => timeout(),
+                  ttl => timeout() | {erlang:time_unit(), non_neg_integer()},
                   merger_fun => merger_fun(term())}.
 
 -record(segmented_cache, {strategy = fifo :: strategy(),
@@ -188,6 +188,7 @@ assert_parameters(Opts) when is_map(Opts) ->
     true = is_integer(N) andalso N > 0,
     TTL0 = maps:get(ttl, Opts, {hours, 8}),
     TTL = case TTL0 of
+               {milliseconds, S} -> S;
                {seconds, S} -> timer:seconds(S);
                {minutes, M} -> timer:minutes(M);
                {hours, H} -> timer:hours(H);
