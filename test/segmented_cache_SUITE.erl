@@ -41,6 +41,7 @@ groups() ->
 %%% Overall setup/teardown
 %%%===================================================================
 init_per_suite(Config) ->
+    ct:pal("Online schedulers ~p~n", [erlang:system_info(schedulers_online)]),
     application:ensure_all_started(telemetry),
     pg:start(pg),
     Config.
@@ -78,29 +79,32 @@ end_per_testcase(_TestCase, _Config) ->
 %%%===================================================================
 
 put_entry_concurrently(_) ->
-    Prop = ?FORALL({Key, Value}, {non_empty(binary(10)), union([char(), binary(), integer()])},
-                   true =:= segmented_cache:put_entry(test, Key, #{value => Value})),
+    Prop = ?FORALL({Key, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
+                   true =:= segmented_cache:put_entry(test, {Key, make_ref()}, Value)),
     run_prop(?FUNCTION_NAME, Prop).
 
 put_entry_and_then_get_it(_) ->
-    Prop = ?FORALL({Key, Value}, {non_empty(binary(32)), union([char(), binary(), integer()])},
+    Prop = ?FORALL({Key0, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
                    begin
+                       Key = {Key0, make_ref()},
                        segmented_cache:put_entry(test, Key, Value),
                        Value =:= segmented_cache:get_entry(test, Key)
                    end),
     run_prop(?FUNCTION_NAME, Prop).
 
 put_entry_and_then_check_membership(_) ->
-    Prop = ?FORALL({Key, Value}, {non_empty(binary(10)), union([char(), binary(), integer()])},
+    Prop = ?FORALL({Key0, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
                    begin
+                       Key = {Key0, make_ref()},
                        segmented_cache:put_entry(test, Key, Value),
                        true =:= segmented_cache:is_member(test, Key)
                    end),
     run_prop(?FUNCTION_NAME, Prop).
 
 put_entry_wait_and_check_false(_) ->
-    Prop = ?FORALL({Key, Value}, {non_empty(binary(10)), binary()},
+    Prop = ?FORALL({Key0, Value}, {non_empty(binary()), binary()},
                    begin
+                       Key = {Key0, make_ref()},
                        segmented_cache:put_entry(test, Key, Value),
                        case wait_until(fun() -> segmented_cache:is_member(test, Key) end,
                                        false, #{time_left => timer:seconds(1), sleep_time => 4}) of
@@ -114,8 +118,11 @@ run_prop(PropName, Property) ->
     run_prop(PropName, Property, 100_000).
 
 run_prop(PropName, Property, NumTests) ->
-    Opts = [verbose, noshrink, long_result, {start_size, 2}, {numtests, NumTests},
-            {numworkers, 256 * erlang:system_info(schedulers_online)}],
+    run_prop(PropName, Property, NumTests, 256).
+
+run_prop(PropName, Property, NumTests, WorkersPerScheduler) ->
+    Opts = [quiet, noshrink, long_result, {start_size, 2}, {numtests, NumTests},
+            {numworkers, WorkersPerScheduler * erlang:system_info(schedulers_online)}],
     case proper:quickcheck(proper:conjunction([{PropName, Property}]), Opts) of
         true -> ok;
         Res -> ct:fail(Res)
