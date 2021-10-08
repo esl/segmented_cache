@@ -21,6 +21,14 @@ jobs:
         with:
           otp-version: ${{ matrix.otp }}
           rebar3-version: '3.17.0'
+      - uses: actions/cache@v2
+        name: Cache
+        with:
+          path: |
+            _build
+          key: ${{ runner.os }}-build-${{ matrix.otp_version }}-${{ hashFiles(format('rebar.lock')) }}-1
+          restore-keys: |
+            ${{ runner.os }}-build-${{ matrix.otp_version }}-1-
       - run: rebar3 compile
       - run: rebar3 ct
       - run: pip install --user codecov
