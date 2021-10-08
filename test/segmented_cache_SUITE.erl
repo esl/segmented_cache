@@ -20,7 +20,8 @@
 all() ->
     [
      {group, basic_api},
-     {group, short_fifo}
+     {group, short_fifo},
+     {group, lru}
     ].
 
 groups() ->
@@ -35,6 +36,11 @@ groups() ->
      {short_fifo, [sequence],
       [
        put_entry_wait_and_check_false
+      ]},
+     {lru, [sequence],
+      [
+       put_entry_and_verify_it_stays,
+       put_entry_and_verify_it_stays_under_load
       ]}
     ].
 
@@ -60,6 +66,12 @@ end_per_suite(_Config) ->
 %%%===================================================================
 %%% Group specific setup/teardown
 %%%===================================================================
+init_per_group(lru, Config) ->
+    print_and_restart_counters(),
+    {ok, Cleaner} = segmented_cache:start(test, #{strategy => lru,
+                                                  segment_num => 2,
+                                                  ttl => {milliseconds, 100}}),
+    [{cleaner, Cleaner} | Config];
 init_per_group(short_fifo, Config) ->
     print_and_restart_counters(),
     {ok, Cleaner} = segmented_cache:start(test, #{strategy => fifo,
@@ -78,6 +90,11 @@ end_per_group(_Groupname, Config) ->
 %%%===================================================================
 %%% Testcase specific setup/teardown
 %%%===================================================================
+init_per_testcase(TestCase, Config)
+  when TestCase =:= put_entry_and_verify_it_stays;
+       TestCase =:= put_entry_and_verify_it_stays_under_load ->
+    print_and_restart_counters(),
+    Config;
 init_per_testcase(_TestCase, Config) ->
     Config.
 
@@ -134,6 +151,39 @@ put_entry_wait_and_check_false(_) ->
                        end
                    end),
     run_prop(?FUNCTION_NAME, Prop).
+
+put_entry_and_verify_it_stays(_) ->
+    Prop = ?FORALL({Key0, Value}, {non_empty(binary()), binary()},
+                   begin
+                       Key = {Key0, make_ref()},
+                       true = segmented_cache:put_entry(test, Key, Value),
+                       case wait_until(fun() -> segmented_cache:is_member(test, Key) end,
+                                       false, #{time_left => 250, sleep_time => 20}) of
+                           {ok, false} -> false;
+                           {error, _E} -> true
+                       end
+                   end),
+    run_prop(?FUNCTION_NAME, Prop, 100, 1).
+
+put_entry_and_verify_it_stays_under_load(_) ->
+    Prop = ?FORALL({Key0, Value}, {non_empty(binary()), binary()},
+                   begin
+                       Key = {Key0, make_ref()},
+                       true = segmented_cache:put_entry(test, Key, Value),
+                       case wait_until(fun() -> segmented_cache:is_member(test, Key) end,
+                                       false, #{time_left => 250, sleep_time => 20}) of
+                           _ -> true
+                       end
+                   end),
+    run_prop(?FUNCTION_NAME, Prop, 10_000, 128),
+    {Hits, Misses} = print_and_restart_counters(),
+    ct:pal("Hits ~p; Misses ~p~n", [Hits, Misses]),
+    Total = Hits + Misses,
+    case Misses/Total < 0.001 of
+        true -> ok;
+        _N ->
+            error("Too many misses")
+    end.
 
 run_prop(PropName, Property) ->
     run_prop(PropName, Property, 100_000).
