@@ -29,7 +29,8 @@ groups() ->
       [
        put_entry_concurrently,
        put_entry_and_then_get_it,
-       put_entry_and_then_check_membership
+       put_entry_and_then_check_membership,
+       put_entry_then_delete_it_then_not_member
       ]},
      {short_fifo, [sequence],
       [
@@ -98,6 +99,17 @@ put_entry_and_then_check_membership(_) ->
                        Key = {Key0, make_ref()},
                        segmented_cache:put_entry(test, Key, Value),
                        true =:= segmented_cache:is_member(test, Key)
+                   end),
+    run_prop(?FUNCTION_NAME, Prop).
+
+put_entry_then_delete_it_then_not_member(_) ->
+    Prop = ?FORALL({Key0, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
+                   begin
+                       Key = {Key0, make_ref()},
+                       segmented_cache:put_entry(test, Key, Value),
+                       segmented_cache:is_member(test, Key),
+                       segmented_cache:delete_entry(test, Key),
+                       false =:= segmented_cache:is_member(test, Key)
                    end),
     run_prop(?FUNCTION_NAME, Prop).
 
