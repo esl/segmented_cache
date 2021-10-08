@@ -44,21 +44,30 @@ groups() ->
 init_per_suite(Config) ->
     ct:pal("Online schedulers ~p~n", [erlang:system_info(schedulers_online)]),
     application:ensure_all_started(telemetry),
+    cnt_pt_new(test),
+    ok = telemetry:attach(
+           <<"cache-request-handler">>,
+           [segmented_cache, request],
+           fun ?MODULE:handle_event/4,
+           []),
     pg:start(pg),
     Config.
 
 end_per_suite(_Config) ->
+    print_and_restart_counters(),
     ok.
 
 %%%===================================================================
 %%% Group specific setup/teardown
 %%%===================================================================
 init_per_group(short_fifo, Config) ->
+    print_and_restart_counters(),
     {ok, Cleaner} = segmented_cache:start(test, #{strategy => fifo,
                                                   segment_num => 2,
                                                   ttl => {milliseconds, 5}}),
     [{cleaner, Cleaner} | Config];
 init_per_group(_Groupname, Config) ->
+    print_and_restart_counters(),
     {ok, Cleaner} = segmented_cache:start(test),
     [{cleaner, Cleaner} | Config].
 
@@ -169,3 +178,34 @@ wait_and_continue(Fun, ExpectedValue, FunResult, #{time_left := TimeLeft,
     timer:sleep(SleepTime),
     do_wait_until(Fun, ExpectedValue, Opts#{time_left => TimeLeft - SleepTime,
                                             history => [FunResult | History]}).
+
+handle_event(Name, Measurements, _Metadata, _Config) ->
+    handle_event(Name, Measurements).
+
+handle_event([segmented_cache, request], #{hit := Hit}) ->
+    case Hit of
+        true -> cnt_pt_incr_hits(test);
+        false -> cnt_pt_incr_misses(test)
+    end.
+
+cnt_pt_new(Counter) ->
+    persistent_term:put({?MODULE, Counter}, counters:new(2, [write_concurrency])).
+
+cnt_pt_incr_hits(Counter) ->
+    counters:add(persistent_term:get({?MODULE, Counter}), 1, 1).
+
+cnt_pt_incr_misses(Counter) ->
+    counters:add(persistent_term:get({?MODULE, Counter}), 2, 1).
+
+cnt_pt_read_hits(Counter) ->
+    counters:get(persistent_term:get({?MODULE, Counter}), 1).
+
+cnt_pt_read_misses(Counter) ->
+    counters:get(persistent_term:get({?MODULE, Counter}), 2).
+
+print_and_restart_counters() ->
+    Hits = cnt_pt_read_hits(test),
+    Misses = cnt_pt_read_misses(test),
+    counters:put(persistent_term:get({?MODULE, test}), 1, 0),
+    counters:put(persistent_term:get({?MODULE, test}), 2, 0),
+    {Hits, Misses}.
