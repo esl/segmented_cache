@@ -21,13 +21,21 @@ jobs:
         with:
           otp-version: ${{ matrix.otp }}
           rebar3-version: '3.17.0'
-      - name: Compile project
-        run: rebar3 compile
-      - name: Run tests
-        run: rebar3 ct
-      - name: Dialyzer
-        run: rebar3 dialyzer
+      - uses: actions/cache@v2
+        name: Cache
+        with:
+          path: |
+            _build
+          key: ${{ runner.os }}-build-${{ matrix.otp_version }}-${{ hashFiles(format('rebar.lock')) }}-1
+          restore-keys: |
+            ${{ runner.os }}-build-${{ matrix.otp_version }}-1-
+      - run: rebar3 compile
+      - run: rebar3 ct
+      - run: pip install --user codecov
         if: ${{ matrix.otp == '24.1' }}
-      - name: Xref
-        run: rebar3 xref
+      - run: /home/runner/.local/bin/codecov
+        if: ${{ matrix.otp == '24.1' }}
+      - run: rebar3 dialyzer
+        if: ${{ matrix.otp == '24.1' }}
+      - run: rebar3 xref
         if: ${{ matrix.otp == '24.1' }}
