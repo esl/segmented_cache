@@ -61,13 +61,16 @@
 %% Raises telemetry event
 %%      name: [?MODULE, request]
 %%      measurements: #{hit => boolean(), time => microsecond()}
+%%      metadata: #{name => atom()}
 -spec is_member(name(), term()) -> boolean().
 is_member(Name, Key) when is_atom(Name) ->
     T1 = erlang:monotonic_time(),
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:is_member_fun/2),
     T2 = erlang:monotonic_time(),
     Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([?MODULE, request], (measurements())#{time := Time, hit := Value =:= true}),
+    telemetry:execute([?MODULE, request],
+                      (measurements())#{time := Time, hit := Value =:= true},
+                      #{name => Name}),
     Value.
 
 %% @doc Get the entry for Key in cache
@@ -75,13 +78,16 @@ is_member(Name, Key) when is_atom(Name) ->
 %% Raises telemetry event
 %%      name: [?MODULE, request]
 %%      measurements: #{hit => boolean(), time => microsecond()}
+%%      metadata: #{name => atom()}
 -spec get_entry(name(), term()) -> term() | not_found.
 get_entry(Name, Key) when is_atom(Name) ->
     T1 = erlang:monotonic_time(),
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:get_entry_fun/2),
     T2 = erlang:monotonic_time(),
     Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([?MODULE, request], (measurements())#{time := Time, hit := Value =/= not_found}),
+    telemetry:execute([?MODULE, request],
+                      (measurements())#{time := Time, hit := Value =/= not_found},
+                      #{name => Name}),
     Value.
 
 %% @doc Add an entry to the first table in the segments.
