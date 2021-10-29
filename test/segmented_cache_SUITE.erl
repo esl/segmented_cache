@@ -15,7 +15,6 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("proper/include/proper.hrl").
--include_lib("eunit/include/eunit.hrl").
 
 -define(CMD_MODULE, segmented_cache_proper_commands).
 
