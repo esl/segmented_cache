@@ -1,5 +1,9 @@
 # `segmented_cache`
 
+[![Actions Status](https://github.com/esl/segmented_cache/actions/workflows/ci.yml/badge.svg)](https://github.com/esl/segmented_cache/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/esl/segmented_cache/branch/main/graph/badge.svg)](https://codecov.io/gh/esl/segmented_cache)
+[![Hex](http://img.shields.io/hexpm/v/segmented_cache.svg)](https://hex.pm/packages/segmented_cache)
+
 `segmented_cache` is a key-value cache library implemented in rotating segments.
 
 ## How does it work
