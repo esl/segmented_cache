@@ -15,7 +15,8 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("proper/include/proper.hrl").
--include_lib("eunit/include/eunit.hrl").
+
+-define(CMD_MODULE, segmented_cache_proper_commands).
 
 all() ->
     [
@@ -31,7 +32,8 @@ groups() ->
        put_entry_concurrently,
        put_entry_and_then_get_it,
        put_entry_and_then_check_membership,
-       put_entry_then_delete_it_then_not_member
+       put_entry_then_delete_it_then_not_member,
+       stateful_property
       ]},
      {short_fifo, [sequence],
       [
@@ -40,7 +42,8 @@ groups() ->
      {lru, [sequence],
       [
        put_entry_and_verify_it_stays,
-       put_entry_and_verify_it_stays_under_load
+       put_entry_and_verify_it_stays_under_load,
+       stateful_property
       ]}
     ].
 
@@ -100,6 +103,21 @@ init_per_testcase(_TestCase, Config) ->
 
 end_per_testcase(_TestCase, _Config) ->
     ok.
+
+%%%===================================================================
+%%% Stateful property Test Case
+%%%===================================================================
+
+stateful_property(_Config) ->
+    Prop =
+        ?FORALL(Cmds, commands(?CMD_MODULE),
+            begin
+                %% Setup and teardown can be found in the init and end for this test case
+                {History, State, Res} = run_commands(?CMD_MODULE, Cmds),
+                ?WHENFAIL(io:format("H: ~p~nS: ~p~n Res: ~p~n", [History, State, Res]),
+                        Res == ok)
+            end),
+    run_prop(?FUNCTION_NAME, Prop).
 
 %%%===================================================================
 %%% Individual Test Cases (from groups() definition)
