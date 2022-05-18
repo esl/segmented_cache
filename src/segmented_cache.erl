@@ -223,11 +223,27 @@ assert_parameters(Opts) when is_map(Opts) ->
     true = is_function(MergerFun, 2),
     {N, TTL, Strategy, MergerFun}.
 
+-ifdef(OTP_RELEASE).
+  -if(?OTP_RELEASE >= 25).
+    ets_settings() ->
+        [set, public,
+         {read_concurrency, true},
+         {write_concurrency, auto},
+         {decentralized_counters, true}].
+  -elif(?OTP_RELEASE >= 21).
+    ets_settings() ->
+        [set, public,
+         {read_concurrency, true},
+         {write_concurrency, true},
+         {decentralized_counters, true}].
+  -endif.
+-else.
 ets_settings() ->
     [set, public,
      {read_concurrency, true},
      {write_concurrency, true},
      {decentralized_counters, true}].
+-endif.
 
 %% @private
 -spec handle_call(any(), pid(), #cache_state{}) -> {reply, ok, #cache_state{}}.
