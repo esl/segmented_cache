@@ -59,7 +59,7 @@
 %% @doc Check if Key is cached
 %%
 %% Raises telemetry event
-%%      name: [?MODULE, request]
+%%      name: [Name, request]
 %%      measurements: #{hit => boolean(), time => microsecond()}
 %%      metadata: #{name => atom()}
 -spec is_member(name(), term()) -> boolean().
@@ -68,7 +68,7 @@ is_member(Name, Key) when is_atom(Name) ->
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:is_member_fun/2),
     T2 = erlang:monotonic_time(),
     Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([?MODULE, request],
+    telemetry:execute([Name, request],
                       (measurements())#{time := Time, hit := Value =:= true},
                       #{name => Name}),
     Value.
@@ -76,7 +76,7 @@ is_member(Name, Key) when is_atom(Name) ->
 %% @doc Get the entry for Key in cache
 %%
 %% Raises telemetry event
-%%      name: [?MODULE, request]
+%%      name: [Name, request]
 %%      measurements: #{hit => boolean(), time => microsecond()}
 %%      metadata: #{name => atom()}
 -spec get_entry(name(), term()) -> term() | not_found.
@@ -85,7 +85,7 @@ get_entry(Name, Key) when is_atom(Name) ->
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:get_entry_fun/2),
     T2 = erlang:monotonic_time(),
     Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([?MODULE, request],
+    telemetry:execute([Name, request],
                       (measurements())#{time := Time, hit := Value =/= not_found},
                       #{name => Name}),
     Value.
@@ -254,12 +254,12 @@ handle_call(_Msg, _From, State) ->
 -spec handle_cast(term(), #cache_state{}) -> {noreply, #cache_state{}}.
 handle_cast({delete_entry, Key}, #cache_state{name = Name} = State) ->
     try iterate_fun_in_tables(Name, Key, fun ?MODULE:delete_entry_fun/2)
-    catch Class:Reason -> telemetry:execute([?MODULE, error], #{class => Class, reason => Reason})
+    catch Class:Reason -> telemetry:execute([Name, error], #{class => Class, reason => Reason})
     end,
     {noreply, State};
 handle_cast({delete_pattern, Pattern}, #cache_state{name = Name} = State) ->
     try iterate_fun_in_tables(Name, Pattern, fun ?MODULE:delete_pattern_fun/2)
-    catch Class:Reason -> telemetry:execute([?MODULE, error], #{class => Class, reason => Reason})
+    catch Class:Reason -> telemetry:execute([Name, error], #{class => Class, reason => Reason})
     end,
     {noreply, State};
 handle_cast(_Msg, State) ->
