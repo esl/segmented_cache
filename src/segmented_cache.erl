@@ -38,17 +38,20 @@
 -type strategy() :: fifo | lru.
 -type merger_fun(Term) :: fun((Term, Term) -> Term).
 -type iterative_fun(Term) :: fun((ets:tid(), Term) -> {continue | stop, not_found | term()}).
--type opts() :: #{strategy => strategy(),
+-type opts() :: #{scope => name(),
+                  strategy => strategy(),
                   segment_num => non_neg_integer(),
                   ttl => timeout() | {erlang:time_unit(), non_neg_integer()},
                   merger_fun => merger_fun(term())}.
 
--record(segmented_cache, {strategy = fifo :: strategy(),
+-record(segmented_cache, {scope :: name(),
+                          strategy = fifo :: strategy(),
                           index :: atomics:atomics_ref(),
                           segments :: tuple(),
                           merger_fun :: merger_fun(term())}).
 
--record(cache_state, {name :: name(),
+-record(cache_state, {scope :: name(),
+                      name :: name(),
                       ttl :: timeout(),
                       timer_ref :: undefined | reference()}).
 
@@ -162,6 +165,7 @@ delete_pattern(Name, Pattern) when is_atom(Name) ->
 %% and an entry in persistent_term will be created and the worker will join a pg group of
 %% the same name.
 %% `Opts' is a map containing the configuration.
+%%      `scope' is a `pg' scope. Defaults to `pg'.
 %%      `strategy' can be fifo or lru. Default is `fifo'.
 %%      `segment_num' is the number of segments for the cache. Default is `3'
 %%      `ttl' is the live, in minutes, of _each_ segment. Default is `480', i.e., 8 hours.
@@ -186,22 +190,22 @@ start_link(Name, Opts) when is_atom(Name), is_map(Opts) ->
 %% @private
 -spec init([any()]) -> {ok, #cache_state{}}.
 init([Name, Opts]) ->
-    {N, TTL, Strategy, MergerFun} = assert_parameters(Opts),
+    {Scope, N, TTL, Strategy, MergerFun} = assert_parameters(Opts),
     SegmentOpts = ets_settings(),
     SegmentsList = lists:map(fun(_) -> ets:new(undefined, SegmentOpts) end, lists:seq(1, N)),
     Segments = list_to_tuple(SegmentsList),
     Index = atomics:new(1, [{signed, false}]),
     atomics:put(Index, 1, 1),
-    Entry = #segmented_cache{strategy = Strategy, index = Index,
+    Entry = #segmented_cache{scope = Scope, strategy = Strategy, index = Index,
                              segments = Segments, merger_fun = MergerFun},
     persistent_term:put({?MODULE, Name}, Entry),
-    pg:join(Name, self()),
+    pg:join(Scope, Name, self()),
     case TTL of
         infinity ->
-            {ok, #cache_state{name = Name, ttl = infinity, timer_ref = undefined}};
+            {ok, #cache_state{scope = Scope, name = Name, ttl = infinity, timer_ref = undefined}};
         _ ->
             TimerRef = erlang:send_after(TTL, self(), purge),
-            {ok, #cache_state{name = Name, ttl = TTL, timer_ref = TimerRef}}
+            {ok, #cache_state{scope = Scope, name = Name, ttl = TTL, timer_ref = TimerRef}}
     end.
 
 assert_parameters(Opts) when is_map(Opts) ->
@@ -221,7 +225,9 @@ assert_parameters(Opts) when is_map(Opts) ->
     true = (Strategy =:= fifo) orelse (Strategy =:= lru),
     MergerFun = maps:get(merger_fun, Opts, fun ?MODULE:default_merger_fun/2),
     true = is_function(MergerFun, 2),
-    {N, TTL, Strategy, MergerFun}.
+    Scope = maps:get(scope, Opts, pg),
+    true = (undefined =/= whereis(Scope)),
+    {Scope, N, TTL, Strategy, MergerFun}.
 
 -ifdef(OTP_RELEASE).
   -if(?OTP_RELEASE >= 25).
@@ -275,8 +281,8 @@ handle_info(_Msg, State) ->
     {noreply, State}.
 
 %% @private
-terminate(_Reason, #cache_state{name = Name, timer_ref = TimerRef}) ->
-    pg:leave(Name, self()),
+terminate(_Reason, #cache_state{scope = Scope, name = Name, timer_ref = TimerRef}) ->
+    pg:leave(Scope, Name, self()),
     erlang:cancel_timer(TimerRef),
     persistent_term:erase({?MODULE, Name}),
     ok.
@@ -306,7 +312,8 @@ purge_last_segment_and_rotate(#cache_state{name = Name}) ->
     NewIndex.
 
 send_to_group(Name, Msg) ->
-    Pids = pg:get_members(Name) -- pg:get_local_members(Name),
+    #segmented_cache{scope = Scope} = persistent_term:get({?MODULE, Name}),
+    Pids = pg:get_members(Scope, Name) -- pg:get_local_members(Scope, Name),
     [gen_server:cast(Pid, Msg) || Pid <- Pids].
 
 %% @private
