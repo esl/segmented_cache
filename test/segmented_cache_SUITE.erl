@@ -16,6 +16,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("proper/include/proper.hrl").
 
+-define(CACHE_NAME, test).
 -define(CMD_MODULE, segmented_cache_proper_commands).
 
 all() ->
@@ -53,10 +54,10 @@ groups() ->
 init_per_suite(Config) ->
     ct:pal("Online schedulers ~p~n", [erlang:system_info(schedulers_online)]),
     application:ensure_all_started(telemetry),
-    cnt_pt_new(test),
+    cnt_pt_new(?CACHE_NAME),
     ok = telemetry:attach(
            <<"cache-request-handler">>,
-           [segmented_cache, request],
+           [?CACHE_NAME, request],
            fun ?MODULE:handle_event/4,
            []),
     pg:start(pg),
@@ -71,19 +72,19 @@ end_per_suite(_Config) ->
 %%%===================================================================
 init_per_group(lru, Config) ->
     print_and_restart_counters(),
-    {ok, Cleaner} = segmented_cache:start(test, #{strategy => lru,
-                                                  segment_num => 2,
-                                                  ttl => {milliseconds, 100}}),
+    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, #{strategy => lru,
+                                                         segment_num => 2,
+                                                         ttl => {milliseconds, 100}}),
     [{cleaner, Cleaner} | Config];
 init_per_group(short_fifo, Config) ->
     print_and_restart_counters(),
-    {ok, Cleaner} = segmented_cache:start(test, #{strategy => fifo,
-                                                  segment_num => 2,
-                                                  ttl => {milliseconds, 5}}),
+    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, #{strategy => fifo,
+                                                         segment_num => 2,
+                                                         ttl => {milliseconds, 5}}),
     [{cleaner, Cleaner} | Config];
 init_per_group(_Groupname, Config) ->
     print_and_restart_counters(),
-    {ok, Cleaner} = segmented_cache:start(test),
+    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME),
     [{cleaner, Cleaner} | Config].
 
 end_per_group(_Groupname, Config) ->
@@ -125,15 +126,15 @@ stateful_property(_Config) ->
 
 put_entry_concurrently(_) ->
     Prop = ?FORALL({Key, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
-                   true =:= segmented_cache:put_entry(test, {Key, make_ref()}, Value)),
+                   true =:= segmented_cache:put_entry(?CACHE_NAME, {Key, make_ref()}, Value)),
     run_prop(?FUNCTION_NAME, Prop).
 
 put_entry_and_then_get_it(_) ->
     Prop = ?FORALL({Key0, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
                    begin
                        Key = {Key0, make_ref()},
-                       segmented_cache:put_entry(test, Key, Value),
-                       Value =:= segmented_cache:get_entry(test, Key)
+                       segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+                       Value =:= segmented_cache:get_entry(?CACHE_NAME, Key)
                    end),
     run_prop(?FUNCTION_NAME, Prop).
 
@@ -141,8 +142,8 @@ put_entry_and_then_check_membership(_) ->
     Prop = ?FORALL({Key0, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
                    begin
                        Key = {Key0, make_ref()},
-                       segmented_cache:put_entry(test, Key, Value),
-                       true =:= segmented_cache:is_member(test, Key)
+                       segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+                       true =:= segmented_cache:is_member(?CACHE_NAME, Key)
                    end),
     run_prop(?FUNCTION_NAME, Prop).
 
@@ -150,10 +151,10 @@ put_entry_then_delete_it_then_not_member(_) ->
     Prop = ?FORALL({Key0, Value}, {non_empty(binary()), union([char(), binary(), integer()])},
                    begin
                        Key = {Key0, make_ref()},
-                       segmented_cache:put_entry(test, Key, Value),
-                       segmented_cache:is_member(test, Key),
-                       segmented_cache:delete_entry(test, Key),
-                       false =:= segmented_cache:is_member(test, Key)
+                       segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+                       segmented_cache:is_member(?CACHE_NAME, Key),
+                       segmented_cache:delete_entry(?CACHE_NAME, Key),
+                       false =:= segmented_cache:is_member(?CACHE_NAME, Key)
                    end),
     run_prop(?FUNCTION_NAME, Prop).
 
@@ -161,8 +162,8 @@ put_entry_wait_and_check_false(_) ->
     Prop = ?FORALL({Key0, Value}, {non_empty(binary()), binary()},
                    begin
                        Key = {Key0, make_ref()},
-                       segmented_cache:put_entry(test, Key, Value),
-                       case wait_until(fun() -> segmented_cache:is_member(test, Key) end,
+                       segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+                       case wait_until(fun() -> segmented_cache:is_member(?CACHE_NAME, Key) end,
                                        false, #{time_left => timer:seconds(1), sleep_time => 4}) of
                            {ok, false} -> true;
                            _ -> false
@@ -174,8 +175,8 @@ put_entry_and_verify_it_stays(_) ->
     Prop = ?FORALL({Key0, Value}, {non_empty(binary()), binary()},
                    begin
                        Key = {Key0, make_ref()},
-                       true = segmented_cache:put_entry(test, Key, Value),
-                       case wait_until(fun() -> segmented_cache:is_member(test, Key) end,
+                       true = segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+                       case wait_until(fun() -> segmented_cache:is_member(?CACHE_NAME, Key) end,
                                        false, #{time_left => 250, sleep_time => 20}) of
                            {ok, false} -> false;
                            {error, _E} -> true
@@ -187,8 +188,8 @@ put_entry_and_verify_it_stays_under_load(_) ->
     Prop = ?FORALL({Key0, Value}, {non_empty(binary()), binary()},
                    begin
                        Key = {Key0, make_ref()},
-                       true = segmented_cache:put_entry(test, Key, Value),
-                       case wait_until(fun() -> segmented_cache:is_member(test, Key) end,
+                       true = segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+                       case wait_until(fun() -> segmented_cache:is_member(?CACHE_NAME, Key) end,
                                        false, #{time_left => 250, sleep_time => 20}) of
                            _ -> true
                        end
@@ -250,10 +251,10 @@ wait_and_continue(Fun, ExpectedValue, FunResult, #{time_left := TimeLeft,
 handle_event(Name, Measurements, _Metadata, _Config) ->
     handle_event(Name, Measurements).
 
-handle_event([segmented_cache, request], #{hit := Hit}) ->
+handle_event([CacheName, request], #{hit := Hit}) ->
     case Hit of
-        true -> cnt_pt_incr_hits(test);
-        false -> cnt_pt_incr_misses(test)
+        true -> cnt_pt_incr_hits(CacheName);
+        false -> cnt_pt_incr_misses(CacheName)
     end.
 
 cnt_pt_new(Counter) ->
@@ -272,8 +273,8 @@ cnt_pt_read_misses(Counter) ->
     counters:get(persistent_term:get({?MODULE, Counter}), 2).
 
 print_and_restart_counters() ->
-    Hits = cnt_pt_read_hits(test),
-    Misses = cnt_pt_read_misses(test),
-    counters:put(persistent_term:get({?MODULE, test}), 1, 0),
-    counters:put(persistent_term:get({?MODULE, test}), 2, 0),
+    Hits = cnt_pt_read_hits(?CACHE_NAME),
+    Misses = cnt_pt_read_misses(?CACHE_NAME),
+    counters:put(persistent_term:get({?MODULE, ?CACHE_NAME}), 1, 0),
+    counters:put(persistent_term:get({?MODULE, ?CACHE_NAME}), 2, 0),
     {Hits, Misses}.

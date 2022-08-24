@@ -36,19 +36,24 @@
 
 -type name() :: atom().
 -type strategy() :: fifo | lru.
--type merger_fun(Term) :: fun((Term, Term) -> Term).
--type iterative_fun(Term) :: fun((ets:tid(), Term) -> {continue | stop, not_found | term()}).
--type opts() :: #{strategy => strategy(),
+-type key() :: term().
+-type value() :: term().
+-type merger_fun(Value) :: fun((Value, Value) -> Value).
+-type iterative_fun(Key, Value) :: fun((ets:tid(), Key) -> {continue | stop, Value}).
+-type opts() :: #{scope => name(),
+                  strategy => strategy(),
                   segment_num => non_neg_integer(),
                   ttl => timeout() | {erlang:time_unit(), non_neg_integer()},
                   merger_fun => merger_fun(term())}.
 
--record(segmented_cache, {strategy = fifo :: strategy(),
+-record(segmented_cache, {scope :: name(),
+                          strategy = fifo :: strategy(),
                           index :: atomics:atomics_ref(),
                           segments :: tuple(),
                           merger_fun :: merger_fun(term())}).
 
--record(cache_state, {name :: name(),
+-record(cache_state, {scope :: name(),
+                      name :: name(),
                       ttl :: timeout(),
                       timer_ref :: undefined | reference()}).
 
@@ -59,7 +64,7 @@
 %% @doc Check if Key is cached
 %%
 %% Raises telemetry event
-%%      name: [?MODULE, request]
+%%      name: [Name, request]
 %%      measurements: #{hit => boolean(), time => microsecond()}
 %%      metadata: #{name => atom()}
 -spec is_member(name(), term()) -> boolean().
@@ -68,7 +73,7 @@ is_member(Name, Key) when is_atom(Name) ->
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:is_member_fun/2),
     T2 = erlang:monotonic_time(),
     Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([?MODULE, request],
+    telemetry:execute([Name, request],
                       (measurements())#{time := Time, hit := Value =:= true},
                       #{name => Name}),
     Value.
@@ -76,7 +81,7 @@ is_member(Name, Key) when is_atom(Name) ->
 %% @doc Get the entry for Key in cache
 %%
 %% Raises telemetry event
-%%      name: [?MODULE, request]
+%%      name: [Name, request]
 %%      measurements: #{hit => boolean(), time => microsecond()}
 %%      metadata: #{name => atom()}
 -spec get_entry(name(), term()) -> term() | not_found.
@@ -85,7 +90,7 @@ get_entry(Name, Key) when is_atom(Name) ->
     Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:get_entry_fun/2),
     T2 = erlang:monotonic_time(),
     Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([?MODULE, request],
+    telemetry:execute([Name, request],
                       (measurements())#{time := Time, hit := Value =/= not_found},
                       #{name => Name}),
     Value.
@@ -147,7 +152,7 @@ delete_entry(Name, Key) when is_atom(Name) ->
     send_to_group(Name, {delete_entry, Key}),
     iterate_fun_in_tables(Name, Key, fun ?MODULE:delete_entry_fun/2).
 
--spec delete_pattern(name(), term()) -> true.
+-spec delete_pattern(name(), ets:match_pattern()) -> true.
 delete_pattern(Name, Pattern) when is_atom(Name) ->
     send_to_group(Name, {delete_pattern, Pattern}),
     iterate_fun_in_tables(Name, Pattern, fun ?MODULE:delete_pattern_fun/2).
@@ -162,66 +167,71 @@ delete_pattern(Name, Pattern) when is_atom(Name) ->
 %% and an entry in persistent_term will be created and the worker will join a pg group of
 %% the same name.
 %% `Opts' is a map containing the configuration.
+%%      `scope' is a `pg' scope. Defaults to `pg'.
 %%      `strategy' can be fifo or lru. Default is `fifo'.
 %%      `segment_num' is the number of segments for the cache. Default is `3'
 %%      `ttl' is the live, in minutes, of _each_ segment. Default is `480', i.e., 8 hours.
 %%      `merger_fun' is a function that, given a conflict, takes in order the old and new values and
 %%          applies a merging strategy. See the `merger_fun/1' type
--spec start(name()) -> {ok, pid()}.
+-spec start(name()) -> gen_server:start_ret().
 start(Name) when is_atom(Name) ->
     start(Name, #{}).
 
--spec start(name(), opts()) -> {ok, pid()}.
+-spec start(name(), opts()) -> gen_server:start_ret().
 start(Name, Opts) when is_atom(Name), is_map(Opts) ->
-    gen_server:start(?MODULE, [Name, Opts], []).
+    gen_server:start(?MODULE, {Name, Opts}, []).
 
--spec start_link(name()) -> {ok, pid()}.
+-spec start_link(name()) -> gen_server:start_ret().
 start_link(Name) when is_atom(Name) ->
     start_link(Name, #{}).
 
--spec start_link(name(), opts()) -> {ok, pid()}.
+-spec start_link(name(), opts()) -> gen_server:start_ret().
 start_link(Name, Opts) when is_atom(Name), is_map(Opts) ->
-    gen_server:start_link(?MODULE, [Name, Opts], []).
+    gen_server:start_link(?MODULE, {Name, Opts}, []).
 
 %% @private
--spec init([any()]) -> {ok, #cache_state{}}.
-init([Name, Opts]) ->
-    {N, TTL, Strategy, MergerFun} = assert_parameters(Opts),
+-spec init({atom(), opts()}) -> {ok, #cache_state{}}.
+init({Name, Opts}) ->
+    {Scope, N, TTL, Strategy, MergerFun} = assert_parameters(Opts),
     SegmentOpts = ets_settings(),
     SegmentsList = lists:map(fun(_) -> ets:new(undefined, SegmentOpts) end, lists:seq(1, N)),
     Segments = list_to_tuple(SegmentsList),
     Index = atomics:new(1, [{signed, false}]),
     atomics:put(Index, 1, 1),
-    Entry = #segmented_cache{strategy = Strategy, index = Index,
+    Entry = #segmented_cache{scope = Scope, strategy = Strategy, index = Index,
                              segments = Segments, merger_fun = MergerFun},
     persistent_term:put({?MODULE, Name}, Entry),
-    pg:join(Name, self()),
+    pg:join(Scope, Name, self()),
     case TTL of
         infinity ->
-            {ok, #cache_state{name = Name, ttl = infinity, timer_ref = undefined}};
+            {ok, #cache_state{scope = Scope, name = Name, ttl = infinity, timer_ref = undefined}};
         _ ->
             TimerRef = erlang:send_after(TTL, self(), purge),
-            {ok, #cache_state{name = Name, ttl = TTL, timer_ref = TimerRef}}
+            {ok, #cache_state{scope = Scope, name = Name, ttl = TTL, timer_ref = TimerRef}}
     end.
 
+-spec assert_parameters(opts()) ->
+    {name(), pos_integer(), timeout(), strategy(), merger_fun(term())}.
 assert_parameters(Opts) when is_map(Opts) ->
     N = maps:get(segment_num, Opts, 3),
     true = is_integer(N) andalso N > 0,
     TTL0 = maps:get(ttl, Opts, {hours, 8}),
     TTL = case TTL0 of
+               infinity -> infinity;
                {milliseconds, S} -> S;
                {seconds, S} -> timer:seconds(S);
                {minutes, M} -> timer:minutes(M);
                {hours, H} -> timer:hours(H);
-               T when is_integer(T) -> timer:minutes(T);
-               T -> T
+               T when is_integer(T) -> timer:minutes(T)
            end,
     true = (TTL =:= infinity) orelse (is_integer(TTL) andalso N > 0),
     Strategy = maps:get(strategy, Opts, fifo),
     true = (Strategy =:= fifo) orelse (Strategy =:= lru),
     MergerFun = maps:get(merger_fun, Opts, fun ?MODULE:default_merger_fun/2),
     true = is_function(MergerFun, 2),
-    {N, TTL, Strategy, MergerFun}.
+    Scope = maps:get(scope, Opts, pg),
+    true = (undefined =/= whereis(Scope)),
+    {Scope, N, TTL, Strategy, MergerFun}.
 
 -ifdef(OTP_RELEASE).
   -if(?OTP_RELEASE >= 25).
@@ -254,12 +264,12 @@ handle_call(_Msg, _From, State) ->
 -spec handle_cast(term(), #cache_state{}) -> {noreply, #cache_state{}}.
 handle_cast({delete_entry, Key}, #cache_state{name = Name} = State) ->
     try iterate_fun_in_tables(Name, Key, fun ?MODULE:delete_entry_fun/2)
-    catch Class:Reason -> telemetry:execute([?MODULE, error], #{class => Class, reason => Reason})
+    catch Class:Reason -> telemetry:execute([Name, error], #{class => Class, reason => Reason})
     end,
     {noreply, State};
 handle_cast({delete_pattern, Pattern}, #cache_state{name = Name} = State) ->
     try iterate_fun_in_tables(Name, Pattern, fun ?MODULE:delete_pattern_fun/2)
-    catch Class:Reason -> telemetry:execute([?MODULE, error], #{class => Class, reason => Reason})
+    catch Class:Reason -> telemetry:execute([Name, error], #{class => Class, reason => Reason})
     end,
     {noreply, State};
 handle_cast(_Msg, State) ->
@@ -269,17 +279,21 @@ handle_cast(_Msg, State) ->
 -spec handle_info(any(), #cache_state{}) -> {noreply, #cache_state{}}.
 handle_info(purge, #cache_state{ttl = TTL} = State) ->
     purge_last_segment_and_rotate(State),
-    TimerRef = erlang:send_after(TTL, self(), purge),
-    {noreply, State#cache_state{timer_ref = TimerRef}};
+    case TTL of
+        infinity -> {noreply, State};
+        _ -> {noreply, State#cache_state{timer_ref = erlang:send_after(TTL, self(), purge)}}
+    end;
 handle_info(_Msg, State) ->
     {noreply, State}.
 
 %% @private
-terminate(_Reason, #cache_state{name = Name, timer_ref = TimerRef}) ->
-    pg:leave(Name, self()),
-    erlang:cancel_timer(TimerRef),
+terminate(_Reason, #cache_state{scope = Scope, name = Name, timer_ref = TimerRef}) ->
+    pg:leave(Scope, Name, self()),
     persistent_term:erase({?MODULE, Name}),
-    ok.
+    case TimerRef of
+        undefined -> ok;
+        _ -> erlang:cancel_timer(TimerRef, [{async, true}, {info, false}])
+    end.
 
 %%====================================================================
 %% Internals
@@ -306,7 +320,8 @@ purge_last_segment_and_rotate(#cache_state{name = Name}) ->
     NewIndex.
 
 send_to_group(Name, Msg) ->
-    Pids = pg:get_members(Name) -- pg:get_local_members(Name),
+    #segmented_cache{scope = Scope} = persistent_term:get({?MODULE, Name}),
+    Pids = pg:get_members(Scope, Name) -- pg:get_local_members(Scope, Name),
     [gen_server:cast(Pid, Msg) || Pid <- Pids].
 
 %% @private
@@ -340,8 +355,8 @@ apply_strategy(lru, _CurrentIndex, FoundIndex, Key, SegmentRecord) ->
     catch _:_ -> false
     end.
 
--spec iterate_fun_in_tables(name(), Key, IterativeFun) -> term() when
-      Key :: term(), IterativeFun :: iterative_fun(Key).
+-spec iterate_fun_in_tables(name(), Key, IterativeFun) -> Value when
+      IterativeFun :: iterative_fun(Key, Value).
 iterate_fun_in_tables(Name, Key, IterativeFun) ->
     SegmentRecord = persistent_term:get({?MODULE, Name}),
     Segments = SegmentRecord#segmented_cache.segments,
@@ -360,9 +375,9 @@ iterate_fun_in_tables(Name, Key, IterativeFun) ->
             Value
     end.
 
--spec iterate_fun_in_tables(iterative_fun(Key), Key, tuple(), Int, Int, Int) ->
-    {not_found | non_neg_integer(), Value} when
-      Key :: term(), Value :: term(), Int :: non_neg_integer().
+-spec iterate_fun_in_tables(IterativeFun, Key, tuple(), Int, Int, Int) ->
+    {not_found, Value} | {non_neg_integer(), Value}
+      when Int :: non_neg_integer(), IterativeFun :: iterative_fun(Key, Value).
 % if we arrived to the last table we finish here
 iterate_fun_in_tables(IterativeFun, Key, Segments, _, LastTableToCheck, LastTableToCheck) ->
     EtsSegment = element(LastTableToCheck, Segments),
@@ -386,7 +401,7 @@ iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, Index
     end.
 
 %% @private
--spec is_member_fun(ets:tid(), term()) -> {continue | stop, not_found | boolean()}.
+-spec is_member_fun(ets:tid(), term()) -> {continue, false} | {stop, true}.
 is_member_fun(EtsSegment, Key) ->
     case ets:member(EtsSegment, Key) of
         true -> {stop, true};
@@ -394,7 +409,8 @@ is_member_fun(EtsSegment, Key) ->
     end.
 
 %% @private
--spec get_entry_fun(ets:tid(), term()) -> {continue | stop, not_found | term()}.
+-spec get_entry_fun(ets:tid(), Key) ->
+    {continue, not_found} | {stop, Value} when Key :: key(), Value :: value().
 get_entry_fun(EtsSegment, Key) ->
     case ets:lookup(EtsSegment, Key) of
         [{_, Value}] -> {stop, Value};
@@ -408,14 +424,14 @@ delete_entry_fun(EtsSegment, Key) ->
     {continue, true}.
 
 %% @private
--spec delete_pattern_fun(ets:tid(), term()) -> {continue, true}.
+-spec delete_pattern_fun(ets:tid(), ets:match_pattern()) -> {continue, true}.
 delete_pattern_fun(EtsSegment, Pattern) ->
     ets:match_delete(EtsSegment, Pattern),
     {continue, true}.
 
 %% @private
 %% @doc This merger simply discards the older value
--spec default_merger_fun(T, T) -> merger_fun(T) when T :: term().
+-spec default_merger_fun(T, T) -> T when T :: term().
 default_merger_fun(_OldValue, NewValue) ->
     NewValue.
 
@@ -449,8 +465,7 @@ post_insert_check_should_retry(true, _, _) -> true;
 post_insert_check_should_retry(false, _, _) -> false.
 
 %% @private
--spec compare_and_swap(pos_integer(), ets:tid(), Key, Value, merger_fun(Value)) ->
-    boolean() when Key :: term(), Value :: term().
+-spec compare_and_swap(non_neg_integer(), ets:tid(), key(), Value, merger_fun(Value)) -> boolean().
 compare_and_swap(0, _EtsSegment, _Key, _Value, _MergerFun) ->
     false;
 compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
@@ -464,6 +479,7 @@ compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
         [] -> false
     end.
 
+-compile({inline, [measurements/0]}).
 measurements() ->
     #{hit => undefined,
       time => undefined}.
