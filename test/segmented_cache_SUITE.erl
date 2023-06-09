@@ -57,7 +57,7 @@ init_per_suite(Config) ->
     cnt_pt_new(?CACHE_NAME),
     ok = telemetry:attach(
            <<"cache-request-handler">>,
-           [?CACHE_NAME, request],
+           [segmented_cache, ?CACHE_NAME, request, stop],
            fun ?MODULE:handle_event/4,
            []),
     pg:start(pg),
@@ -248,10 +248,7 @@ wait_and_continue(Fun, ExpectedValue, FunResult, #{time_left := TimeLeft,
     do_wait_until(Fun, ExpectedValue, Opts#{time_left => TimeLeft - SleepTime,
                                             history => [FunResult | History]}).
 
-handle_event(Name, Measurements, _Metadata, _Config) ->
-    handle_event(Name, Measurements).
-
-handle_event([CacheName, request], #{hit := Hit}) ->
+handle_event([segmented_cache, CacheName, request, stop], _, #{hit := Hit}, _) ->
     case Hit of
         true -> cnt_pt_incr_hits(CacheName);
         false -> cnt_pt_incr_misses(CacheName)
