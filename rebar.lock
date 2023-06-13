@@ -1,8 +1,8 @@
 {"1.2.0",
-[{<<"telemetry">>,{pkg,<<"telemetry">>,<<"1.1.0">>},0}]}.
+[{<<"telemetry">>,{pkg,<<"telemetry">>,<<"1.2.1">>},0}]}.
 [
 {pkg_hash,[
- {<<"telemetry">>, <<"A589817034A27EAB11144AD24D5C0F9FAB1F58173274B1E9BAE7074AF9CBEE51">>}]},
+ {<<"telemetry">>, <<"68FDFE8D8F05A8428483A97D7AAB2F268AAFF24B49E0F599FAA091F1D4E7F61C">>}]},
 {pkg_hash_ext,[
- {<<"telemetry">>, <<"B727B2A1F75614774CFF2D7565B64D0DFA5BD52BA517F16543E6FC7EFCC0DF48">>}]}
+ {<<"telemetry">>, <<"DAD9CE9D8EFFC621708F99EAC538EF1CBE05D6A874DD741DE2E689C47FEAFED5">>}]}
 ].

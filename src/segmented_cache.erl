@@ -63,37 +63,31 @@
 
 %% @doc Check if Key is cached
 %%
-%% Raises telemetry event
-%%      name: [Name, request]
-%%      measurements: #{hit => boolean(), time => microsecond()}
-%%      metadata: #{name => atom()}
+%% Raises telemetry span
+%%      name: [segmented_cache, Name, request, _]
+%%      start metadata: #{name => atom()}
+%%      stop metadata: #{name => atom(), hit => boolean()}
 -spec is_member(name(), term()) -> boolean().
 is_member(Name, Key) when is_atom(Name) ->
-    T1 = erlang:monotonic_time(),
-    Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:is_member_fun/2),
-    T2 = erlang:monotonic_time(),
-    Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([Name, request],
-                      (measurements())#{time := Time, hit := Value =:= true},
-                      #{name => Name}),
-    Value.
+    Span = fun() ->
+                   Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:is_member_fun/2),
+                   {Value, #{hit => Value =:= true}}
+           end,
+    telemetry:span([segmented_cache, Name, request], #{name => Name, type => is_member}, Span).
 
 %% @doc Get the entry for Key in cache
 %%
-%% Raises telemetry event
-%%      name: [Name, request]
-%%      measurements: #{hit => boolean(), time => microsecond()}
-%%      metadata: #{name => atom()}
+%% Raises telemetry span
+%%      name: [segmented_cache, Name, request, _]
+%%      start metadata: #{name => atom()}
+%%      stop metadata: #{name => atom(), hit => boolean()}
 -spec get_entry(name(), term()) -> term() | not_found.
 get_entry(Name, Key) when is_atom(Name) ->
-    T1 = erlang:monotonic_time(),
-    Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:get_entry_fun/2),
-    T2 = erlang:monotonic_time(),
-    Time = erlang:convert_time_unit(T2 - T1, native, microsecond),
-    telemetry:execute([Name, request],
-                      (measurements())#{time := Time, hit := Value =/= not_found},
-                      #{name => Name}),
-    Value.
+    Span = fun() ->
+                   Value = iterate_fun_in_tables(Name, Key, fun ?MODULE:get_entry_fun/2),
+                   {Value, #{hit => Value =/= not_found}}
+           end,
+    telemetry:span([segmented_cache, Name, request], #{name => Name, type => get_entry}, Span).
 
 %% @doc Add an entry to the first table in the segments.
 %%
@@ -147,11 +141,25 @@ merge_entry(Name, Key, Value) when is_atom(Name) ->
         false -> put_entry_front(SegmentRecord, Key, Value)
     end.
 
+%% @doc Delete an entry in all ets segments
+%%
+%% Might raise a telemetry error if the request fails:
+%%      name: [segmented_cache, Name, delete_error]
+%%      measurements: #{}
+%%      metadata: #{name => atom(), delete_type => entry, value => Key,
+%%                  class => throw | error | exit, reason => term()}
 -spec delete_entry(name(), term()) -> true.
 delete_entry(Name, Key) when is_atom(Name) ->
     send_to_group(Name, {delete_entry, Key}),
     iterate_fun_in_tables(Name, Key, fun ?MODULE:delete_entry_fun/2).
 
+%% @doc Delete a pattern in all ets segments
+%%
+%% Might raise a telemetry error if the request fails:
+%%      name: [segmented_cache, Name, delete_error]
+%%      measurements: #{}
+%%      metadata: #{name => atom(), delete_type => pattern, value => Pattern,
+%%                  class => throw | error | exit, reason => term()}
 -spec delete_pattern(name(), ets:match_pattern()) -> true.
 delete_pattern(Name, Pattern) when is_atom(Name) ->
     send_to_group(Name, {delete_pattern, Pattern}),
@@ -263,17 +271,23 @@ handle_call(_Msg, _From, State) ->
 %% @private
 -spec handle_cast(term(), #cache_state{}) -> {noreply, #cache_state{}}.
 handle_cast({delete_entry, Key}, #cache_state{name = Name} = State) ->
-    try iterate_fun_in_tables(Name, Key, fun ?MODULE:delete_entry_fun/2)
-    catch Class:Reason -> telemetry:execute([Name, error], #{class => Class, reason => Reason})
-    end,
+    do_delete(Name, Key, entry, fun ?MODULE:delete_entry_fun/2),
     {noreply, State};
 handle_cast({delete_pattern, Pattern}, #cache_state{name = Name} = State) ->
-    try iterate_fun_in_tables(Name, Pattern, fun ?MODULE:delete_pattern_fun/2)
-    catch Class:Reason -> telemetry:execute([Name, error], #{class => Class, reason => Reason})
-    end,
+    do_delete(Name, Pattern, pattern, fun ?MODULE:delete_pattern_fun/2),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
+
+
+-spec do_delete(name(), term(), entry | pattern, fun()) -> term().
+do_delete(Name, Value, Type, Fun) ->
+    try
+        iterate_fun_in_tables(Name, Value, Fun)
+    catch Class:Reason ->
+              Metadata = #{name => Name, delete_type => Type, value => Value, class => Class, reason => Reason},
+              telemetry:execute([segmented_cache, Name, delete_error], #{}, Metadata)
+    end.
 
 %% @private
 -spec handle_info(any(), #cache_state{}) -> {noreply, #cache_state{}}.
@@ -478,8 +492,3 @@ compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
             end;
         [] -> false
     end.
-
--compile({inline, [measurements/0]}).
-measurements() ->
-    #{hit => undefined,
-      time => undefined}.
