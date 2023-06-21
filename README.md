@@ -29,7 +29,7 @@ Here instead, the cache uses a –bunch of– ets table with `read_concurrency`,
 All operations hove been carefully written following the latest OTP [efficiency guide](https://erlang.org/doc/efficiency_guide/users_guide.html), including maps operations that improve sharing, avoiding unnecessary copying from ETS tables, inline list functions, use `atomics` and `persistent_term` as in [this guide](https://blog.erlang.org/persistent_term/).
 
 ### Instrumentation
-These days, all modern services must be instrumented. This cache library helps follow the RED method –Rate, Errors, Duration–: that is, lookup operations raise telemetry events with name `[segmented_cache, request]` with information whether there was a hit or not (`hit := boolean()`), and the time the lookup took, in microseconds (`time := integer()`). With this, we can aggregate the total Rate, and extract the proportion of cache misses, or Errors, while knowing the Duration of the lookups.
+These days, all modern services must be instrumented. This cache library helps follow the RED method –Rate, Errors, Duration–: that is, lookup operations raise telemetry events with name `[segmented_cache, Name, request]` with information whether there was a hit or not (`hit := boolean()`), and the time the lookup took, in microseconds (`time := integer()`). With this, we can aggregate the total Rate, and extract the proportion of cache misses, or Errors, while knowing the Duration of the lookups. See the documentation for details.
 
 ## Configuration
 
