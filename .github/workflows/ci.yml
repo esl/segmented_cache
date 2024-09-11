@@ -11,17 +11,17 @@ jobs:
     name: OTP ${{matrix.otp}}
     strategy:
       matrix:
-        otp: ['26.0', '25.3', '24.3']
-    runs-on: 'ubuntu-22.04'
+        otp: ['27', '26', '25']
+    runs-on: 'ubuntu-24.04'
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
-          rebar3-version: '3.21.0'
-      - uses: actions/cache@v2
+          rebar3-version: '3.24.0'
+      - uses: actions/cache@v4
         name: Cache
         with:
           path: |
@@ -32,13 +32,13 @@ jobs:
       - run: rebar3 compile
       - run: rebar3 ct
       - run: rebar3 dialyzer
-        if: ${{ matrix.otp == '26.0' }}
+        if: ${{ matrix.otp == '27' }}
       - run: rebar3 xref
-        if: ${{ matrix.otp == '26.0' }}
+        if: ${{ matrix.otp == '27' }}
       - run: rebar3 as test do cover, covertool generate
-        if: ${{ matrix.otp == '26.0' }}
+        if: ${{ matrix.otp == '27' }}
       - name: Upload code coverage
         uses: codecov/codecov-action@v2
-        if: ${{ matrix.otp == '26.0' }}
+        if: ${{ matrix.otp == '27' }}
         with:
           file: "_build/test/covertool/segmented_cache.covertool.xml"
