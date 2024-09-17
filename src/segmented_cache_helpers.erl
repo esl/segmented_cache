@@ -1,5 +1,5 @@
-%% @private
 -module(segmented_cache_helpers).
+-moduledoc false.
 
 -define(APP_KEY, segmented_cache).
 
@@ -238,6 +238,7 @@ compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
 %% Note that we must first empty the last table, and then rotate the index. If it was done
 %% in the opposite order, there's a chance a worker can insert an entry at the front just
 %% before the table is purged.
+-spec purge_last_segment_and_rotate(segmented_cache:name()) -> non_neg_integer().
 purge_last_segment_and_rotate(Name) ->
     SegmentRecord = get_cache_config(Name),
     Index = atomics:get(SegmentRecord#segmented_cache.index, 1),

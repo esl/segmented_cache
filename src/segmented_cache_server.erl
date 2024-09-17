@@ -1,5 +1,5 @@
-%% @private
 -module(segmented_cache_server).
+-moduledoc false.
 
 -behaviour(gen_server).
 
@@ -10,11 +10,11 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -type request_content() :: term().
-
 -record(cache_state, {scope :: segmented_cache:scope(),
                       name :: segmented_cache:name(),
                       ttl :: timeout(),
                       timer_ref :: undefined | reference()}).
+-type state() :: #cache_state{}.
 
 %%====================================================================
 %% API
@@ -40,7 +40,7 @@ request_delete_pattern(Name, Pattern) ->
 %% gen_server callbacks
 %%====================================================================
 
--spec init({segmented_cache:name(), segmented_cache:opts()}) -> {ok, #cache_state{}}.
+-spec init({segmented_cache:name(), segmented_cache:opts()}) -> {ok, state()}.
 init({Name, Opts}) ->
     #{scope := Scope, ttl := TTL} = segmented_cache_helpers:init_cache_config(Name, Opts),
     pg:join(Scope, Name, self()),
@@ -52,11 +52,11 @@ init({Name, Opts}) ->
             {ok, #cache_state{scope = Scope, name = Name, ttl = TTL, timer_ref = TimerRef}}
     end.
 
--spec handle_call(any(), gen_server:from(), #cache_state{}) -> {reply, ok, #cache_state{}}.
+-spec handle_call(any(), gen_server:from(), state()) -> {reply, ok, state()}.
 handle_call(_Msg, _From, State) ->
     {reply, ok, State}.
 
--spec handle_cast(term(), #cache_state{}) -> {noreply, #cache_state{}}.
+-spec handle_cast(term(), state()) -> {noreply, state()}.
 handle_cast({delete_entry, Key}, #cache_state{name = Name} = State) ->
     segmented_cache_helpers:delete_entry(Name, Key),
     {noreply, State};
@@ -66,7 +66,7 @@ handle_cast({delete_pattern, Pattern}, #cache_state{name = Name} = State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
--spec handle_info(any(), #cache_state{}) -> {noreply, #cache_state{}}.
+-spec handle_info(any(), state()) -> {noreply, state()}.
 handle_info(purge, #cache_state{name = Name, ttl = TTL} = State) ->
     segmented_cache_helpers:purge_last_segment_and_rotate(Name),
     case TTL of
@@ -76,6 +76,7 @@ handle_info(purge, #cache_state{name = Name, ttl = TTL} = State) ->
 handle_info(_Msg, State) ->
     {noreply, State}.
 
+-spec terminate(normal | shutdown | {shutdown, term()} | term(), state()) -> term().
 terminate(_Reason, #cache_state{name = Name, timer_ref = TimerRef}) ->
     segmented_cache_helpers:erase_cache_config(Name),
     case TimerRef of

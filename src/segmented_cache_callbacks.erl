@@ -1,5 +1,5 @@
-%% @private
 -module(segmented_cache_callbacks).
+-moduledoc false.
 
 -export([is_member_ets_fun/2, get_entry_ets_fun/2,
          delete_entry_fun/2, delete_pattern_fun/2,
