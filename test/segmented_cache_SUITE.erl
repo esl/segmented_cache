@@ -13,6 +13,7 @@
          init_per_testcase/2,
          end_per_testcase/2]).
 
+-include_lib("stdlib/include/assert.hrl").
 -include_lib("common_test/include/ct.hrl").
 -include_lib("proper/include/proper.hrl").
 
@@ -22,6 +23,7 @@
 all() ->
     [
      {group, basic_api},
+     {group, cache_limits},
      {group, short_fifo},
      {group, lru}
     ].
@@ -35,6 +37,10 @@ groups() ->
        put_entry_and_then_check_membership,
        put_entry_then_delete_it_then_not_member,
        stateful_property
+      ]},
+     {cache_limits, [sequence],
+      [
+       ensure_configured_size_is_respected
       ]},
      {short_fifo, [sequence],
       [
@@ -72,15 +78,25 @@ end_per_suite(_Config) ->
 %%%===================================================================
 init_per_group(lru, Config) ->
     print_and_restart_counters(),
-    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, #{strategy => lru,
-                                                         segment_num => 2,
-                                                         ttl => {milliseconds, 100}}),
+    Opts = #{strategy => lru,
+             segment_num => 2,
+             ttl => {milliseconds, 100}},
+    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, Opts),
     [{cleaner, Cleaner} | Config];
 init_per_group(short_fifo, Config) ->
     print_and_restart_counters(),
-    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, #{strategy => fifo,
-                                                         segment_num => 2,
-                                                         ttl => {milliseconds, 5}}),
+    Opts = #{strategy => fifo,
+             segment_num => 2,
+             ttl => {milliseconds, 5}},
+    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, Opts),
+    [{cleaner, Cleaner} | Config];
+init_per_group(cache_limits, Config) ->
+    print_and_restart_counters(),
+    Opts = #{entries_limit => 1,
+             strategy => fifo,
+             segment_num => 2,
+             ttl => {seconds, 60}},
+    {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, Opts),
     [{cleaner, Cleaner} | Config];
 init_per_group(_Groupname, Config) ->
     print_and_restart_counters(),
@@ -108,6 +124,15 @@ end_per_testcase(_TestCase, _Config) ->
 %%%===================================================================
 %%% Stateful property Test Case
 %%%===================================================================
+
+ensure_configured_size_is_respected(_Config) ->
+    %% We have 2 tables with 1 element each
+    ?assert(segmented_cache:put_entry(?CACHE_NAME, one, make_ref())),
+    ?assert(segmented_cache:put_entry(?CACHE_NAME, two, make_ref())),
+    ?assert(segmented_cache:put_entry(?CACHE_NAME, three, make_ref())),
+    ?assert(segmented_cache:is_member(?CACHE_NAME, three)),
+    ?assert(segmented_cache:is_member(?CACHE_NAME, two)),
+    ?assertNot(segmented_cache:is_member(?CACHE_NAME, one)).
 
 stateful_property(_Config) ->
     Prop =

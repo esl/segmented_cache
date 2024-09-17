@@ -39,17 +39,20 @@ For more information, see the README, and the function documentation.
 -type key() :: term().
 ?DOC("Dynamic type of _values_ from cache clients.").
 -type value() :: term().
+?DOC("Maximum number of entries per segment. When filled, rotation is ensued.").
+-type entries_limit() :: infinity | non_neg_integer().
 ?DOC("Merging function to use for resolving conflicts").
 -type merger_fun(Value) :: fun((Value, Value) -> Value).
 ?DOC("Configuration values for the cache.").
 -type opts() :: #{scope => scope(),
                   strategy => strategy(),
+                  entries_limit => entries_limit(),
                   segment_num => non_neg_integer(),
                   ttl => timeout() | {erlang:time_unit(), non_neg_integer()},
                   merger_fun => merger_fun(term())}.
 
 -export_type([scope/0, name/0, key/0, value/0, hit/0, delete_error/1,
-              strategy/0, merger_fun/1, opts/0]).
+              entries_limit/0, strategy/0, merger_fun/1, opts/0]).
 
 %%====================================================================
 %% API

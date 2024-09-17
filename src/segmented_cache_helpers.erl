@@ -9,7 +9,9 @@
 -export([purge_last_segment_and_rotate/1]).
 
 -record(segmented_cache, {scope :: segmented_cache:scope(),
+                          name :: segmented_cache:name(),
                           strategy = fifo :: segmented_cache:strategy(),
+                          entries_limit = infinity :: segmented_cache:entries_limit(),
                           index :: atomics:atomics_ref(),
                           segments :: tuple(),
                           merger_fun :: merger_fun(term())}).
@@ -26,16 +28,22 @@
 
 -spec init_cache_config(segmented_cache:name(), segmented_cache:opts()) ->
     #{scope := segmented_cache:scope(), ttl := timeout()}.
-init_cache_config(Name, Opts) ->
-    {Scope, N, TTL, Strategy, MergerFun} = assert_parameters(Opts),
-    SegmentOpts = ets_settings(),
+init_cache_config(Name, Opts0) ->
+    #{scope := Scope,
+      strategy := Strategy,
+      entries_limit := EntriesLimit,
+      segment_num := N,
+      ttl := TTL,
+      merger_fun := MergerFun} = Opts = assert_parameters(Opts0),
+    SegmentOpts = ets_settings(Opts),
     SegmentsList = lists:map(fun(_) -> ets:new(undefined, SegmentOpts) end, lists:seq(1, N)),
     Segments = list_to_tuple(SegmentsList),
     Index = atomics:new(1, [{signed, false}]),
     atomics:put(Index, 1, 1),
-    Config = #segmented_cache{scope = Scope, strategy = Strategy, index = Index,
-                             segments = Segments, merger_fun = MergerFun},
-    set_cache_config(Name, Config),
+    Config = #segmented_cache{scope = Scope, name = Name, strategy = Strategy,
+                              index = Index, entries_limit = EntriesLimit,
+                              segments = Segments, merger_fun = MergerFun},
+    persist_cache_config(Name, Config),
     #{scope => Scope, ttl => TTL}.
 
 -spec get_cache_scope(segmented_cache:name()) -> segmented_cache:scope().
@@ -51,8 +59,8 @@ erase_cache_config(Name) ->
 get_cache_config(Name) ->
     persistent_term:get({?APP_KEY, Name}).
 
--spec set_cache_config(segmented_cache:name(), config()) -> ok.
-set_cache_config(Name, Config) ->
+-spec persist_cache_config(segmented_cache:name(), config()) -> ok.
+persist_cache_config(Name, Config) ->
     persistent_term:put({?APP_KEY, Name}, Config).
 
 %%====================================================================
@@ -77,7 +85,7 @@ get_entry_span(Name, Key) when is_atom(Name) ->
 -spec put_entry_front(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) -> boolean().
 put_entry_front(Name, Key, Value) ->
     SegmentRecord = get_cache_config(Name),
-    do_put_entry_front(SegmentRecord, Key, Value).
+    do_put_entry_front(SegmentRecord, Key, Value, 3).
 
 -spec merge_entry(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) -> boolean().
 merge_entry(Name, Key, Value) when is_atom(Name) ->
@@ -91,7 +99,7 @@ merge_entry(Name, Key, Value) when is_atom(Name) ->
         end,
     case iterate_fun_in_tables(Name, Key, F) of
         true -> true;
-        false -> do_put_entry_front(SegmentRecord, Key, Value)
+        false -> do_put_entry_front(SegmentRecord, Key, Value, 3)
     end.
 
 -spec delete_entry(segmented_cache:name(), segmented_cache:key()) -> true.
@@ -187,27 +195,49 @@ apply_strategy(lru, _CurrentIndex, FoundIndex, Key, SegmentRecord) ->
     Segments = SegmentRecord#segmented_cache.segments,
     FoundInSegment = element(FoundIndex, Segments),
     try [{_, Value}] = ets:lookup(FoundInSegment, Key),
-        do_put_entry_front(SegmentRecord, Key, Value)
+        do_put_entry_front(SegmentRecord, Key, Value, 3)
     catch _:_ -> false
     end.
 
--spec do_put_entry_front(#segmented_cache{}, segmented_cache:key(), segmented_cache:value()) ->
+-spec do_put_entry_front(#segmented_cache{}, segmented_cache:key(), segmented_cache:value(), 0..3) ->
     boolean().
-do_put_entry_front(SegmentRecord, Key, Value) ->
-    Atomic = SegmentRecord#segmented_cache.index,
+do_put_entry_front(_, _, _, 0) -> false;
+do_put_entry_front(#segmented_cache{
+                      name = Name,
+                      entries_limit = EntriesLimit,
+                      index = Atomic,
+                      segments = Segments,
+                      merger_fun = MergerFun
+                     } = SegmentRecord, Key, Value, Retry) ->
     Index = atomics:get(Atomic, 1),
-    Segments = SegmentRecord#segmented_cache.segments,
     FrontSegment = element(Index, Segments),
-    Inserted = case ets:insert_new(FrontSegment, {Key, Value}) of
-                   true -> true;
-                   false ->
-                       MergerFun = SegmentRecord#segmented_cache.merger_fun,
-                       compare_and_swap(3, FrontSegment, Key, Value, MergerFun)
-               end,
-    MaybeMovedIndex = atomics:get(Atomic, 1),
-    case post_insert_check_should_retry(Inserted, Index, MaybeMovedIndex) of
-        false -> Inserted;
-        true -> do_put_entry_front(SegmentRecord, Key, Value)
+    case insert_new(FrontSegment, Key, Value, EntriesLimit, Name) of
+        retry ->
+            do_put_entry_front(SegmentRecord, Key, Value, Retry - 1);
+        true ->
+            MaybeMovedIndex = atomics:get(Atomic, 1),
+            case post_insert_check_should_retry(true, Index, MaybeMovedIndex) of
+                false -> true;
+                true -> do_put_entry_front(SegmentRecord, Key, Value, Retry - 1)
+            end;
+        false ->
+            Inserted = compare_and_swap(3, FrontSegment, Key, Value, MergerFun),
+            MaybeMovedIndex = atomics:get(Atomic, 1),
+            case post_insert_check_should_retry(Inserted, Index, MaybeMovedIndex) of
+                false -> Inserted;
+                true -> do_put_entry_front(SegmentRecord, Key, Value, Retry - 1)
+            end
+    end.
+
+insert_new(Table, Key, Value, infinity, _) ->
+    ets:insert_new(Table, {Key, Value});
+insert_new(Table, Key, Value, EntriesLimit, Name) ->
+    case EntriesLimit =< ets:info(Table, size) of
+        false ->
+            ets:insert_new(Table, {Key, Value});
+        true ->
+            purge_last_segment_and_rotate(Name),
+            retry
     end.
 
 -spec post_insert_check_should_retry(boolean(), integer(), integer()) -> boolean().
@@ -254,12 +284,14 @@ purge_last_segment_and_rotate(Name) ->
     atomics:put(SegmentRecord#segmented_cache.index, 1, NewIndex),
     NewIndex.
 
--spec assert_parameters(segmented_cache:opts()) ->
-    {segmented_cache:name(), pos_integer(), timeout(), segmented_cache:strategy(), merger_fun(term())}.
-assert_parameters(Opts) when is_map(Opts) ->
-    N = maps:get(segment_num, Opts, 3),
-    true = is_integer(N) andalso N > 0,
-    TTL0 = maps:get(ttl, Opts, {hours, 8}),
+-spec assert_parameters(segmented_cache:opts()) -> segmented_cache:opts().
+assert_parameters(Opts0) when is_map(Opts0) ->
+    #{scope := Scope,
+      strategy := Strategy,
+      entries_limit := EntriesLimit,
+      segment_num := N,
+      ttl := TTL0,
+      merger_fun := MergerFun} = Opts = maps:merge(defaults(), Opts0),
     TTL = case TTL0 of
                infinity -> infinity;
                {milliseconds, S} -> S;
@@ -268,31 +300,33 @@ assert_parameters(Opts) when is_map(Opts) ->
                {hours, H} -> timer:hours(H);
                T when is_integer(T) -> timer:minutes(T)
            end,
+    true = is_integer(N) andalso N > 0,
+    true = (EntriesLimit =:= infinity) orelse (is_integer(EntriesLimit) andalso EntriesLimit > 0),
     true = (TTL =:= infinity) orelse (is_integer(TTL) andalso N > 0),
-    Strategy = maps:get(strategy, Opts, fifo),
     true = (Strategy =:= fifo) orelse (Strategy =:= lru),
-    MergerFun = maps:get(merger_fun, Opts, fun segmented_cache_callbacks:default_merger_fun/2),
     true = is_function(MergerFun, 2),
-    Scope = maps:get(scope, Opts, pg),
     true = (undefined =/= whereis(Scope)),
-    {Scope, N, TTL, Strategy, MergerFun}.
+    Opts#{ttl := TTL}.
 
--ifdef(OTP_RELEASE).
-  -if(?OTP_RELEASE >= 25).
-    ets_settings() ->
-        [set, public,
-         {read_concurrency, true},
-         {write_concurrency, auto},
-         {decentralized_counters, true}].
-  -elif(?OTP_RELEASE >= 21).
-    ets_settings() ->
-        [set, public,
-         {read_concurrency, true},
-         {write_concurrency, true},
-         {decentralized_counters, true}].
-  -endif.
+defaults() ->
+    #{scope => pg,
+      strategy => fifo,
+      entries_limit => infinity,
+      segment_num => 3,
+      ttl => {hours, 8},
+      merger_fun => fun segmented_cache_callbacks:default_merger_fun/2}.
+
+-if(?OTP_RELEASE >= 25).
+ets_settings(#{entries_limit := infinity}) ->
+    [set, public,
+     {read_concurrency, true},
+     {write_concurrency, auto}];
+ets_settings(#{entries_limit := _}) ->
+    [set, public,
+     {read_concurrency, true},
+     {write_concurrency, true}].
 -else.
-ets_settings() ->
+ets_settings(_Opts) ->
     [set, public,
      {read_concurrency, true},
      {write_concurrency, true},

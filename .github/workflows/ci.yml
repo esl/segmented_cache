@@ -38,7 +38,10 @@ jobs:
       - run: rebar3 as test do cover, covertool generate
         if: ${{ matrix.otp == '27' }}
       - name: Upload code coverage
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@v4
         if: ${{ matrix.otp == '27' }}
         with:
-          file: "_build/test/covertool/segmented_cache.covertool.xml"
+          files: _build/test/covertool/segmented_cache.covertool.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+          verbose: true
