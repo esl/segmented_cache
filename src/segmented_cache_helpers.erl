@@ -1,5 +1,5 @@
-%% @private
 -module(segmented_cache_helpers).
+-moduledoc false.
 
 -define(APP_KEY, segmented_cache).
 

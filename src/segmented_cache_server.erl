@@ -1,5 +1,5 @@
-%% @private
 -module(segmented_cache_server).
+-moduledoc false.
 
 -behaviour(gen_server).
 
