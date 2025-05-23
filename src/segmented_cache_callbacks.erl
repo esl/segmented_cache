@@ -1,9 +1,18 @@
 -module(segmented_cache_callbacks).
--moduledoc false.
+-if(?OTP_RELEASE >= 27).
+-define(MODULEDOC(Str), -moduledoc(Str)).
+-else.
+-define(MODULEDOC(Str), -compile([])).
+-endif.
+?MODULEDOC(false).
 
--export([is_member_ets_fun/2, get_entry_ets_fun/2,
-         delete_entry_fun/2, delete_pattern_fun/2,
-         default_merger_fun/2]).
+-export([
+    is_member_ets_fun/2,
+    get_entry_ets_fun/2,
+    delete_entry_fun/2,
+    delete_pattern_fun/2,
+    default_merger_fun/2
+]).
 
 -spec is_member_ets_fun(ets:tid(), segmented_cache:key()) -> {continue, false} | {stop, true}.
 is_member_ets_fun(EtsSegment, Key) ->
@@ -12,9 +21,8 @@ is_member_ets_fun(EtsSegment, Key) ->
         false -> {continue, false}
     end.
 
--spec get_entry_ets_fun(ets:tid(), Key) ->
-    {continue, not_found} | {stop, Value}
-      when Key :: segmented_cache:key(), Value :: segmented_cache:value().
+-spec get_entry_ets_fun(ets:tid(), Key) -> {continue, not_found} | {stop, Value} when
+    Key :: segmented_cache:key(), Value :: segmented_cache:value().
 get_entry_ets_fun(EtsSegment, Key) ->
     case ets:lookup(EtsSegment, Key) of
         [{_, Value}] -> {stop, Value};
@@ -31,7 +39,7 @@ delete_pattern_fun(EtsSegment, Pattern) ->
     ets:match_delete(EtsSegment, Pattern),
     {continue, true}.
 
-%% @doc This merger simply discards the older value
+%% This merger simply discards the older value
 -spec default_merger_fun(T, T) -> T when T :: term().
 default_merger_fun(_OldValue, NewValue) ->
     NewValue.

@@ -1,15 +1,15 @@
-{application, segmented_cache,
- [{description, "A segmented cache implementation"},
-  {vsn, git},
-  {registered, []},
-  {applications,
-   [kernel,
-    stdlib,
-    telemetry
-   ]},
-  {env,[]},
-  {doc, "doc"},
-  {modules, []},
-  {licenses, ["Apache 2.0"]},
-  {links, [{"GitHub", "https://github.com/esl/segmented_cache/"}]}
- ]}.
+{application, segmented_cache, [
+    {description, "A segmented cache implementation"},
+    {vsn, git},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        telemetry
+    ]},
+    {env, []},
+    {doc, "doc"},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/esl/segmented_cache/"}]}
+]}.

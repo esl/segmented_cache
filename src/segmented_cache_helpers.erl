@@ -1,20 +1,28 @@
 -module(segmented_cache_helpers).
--moduledoc false.
+-if(?OTP_RELEASE >= 27).
+-define(MODULEDOC(Str), -moduledoc(Str)).
+-else.
+-define(MODULEDOC(Str), -compile([])).
+-endif.
+?MODULEDOC(false).
 
 -define(APP_KEY, segmented_cache).
+-compile({inline, [next/2]}).
 
 -export([init_cache_config/2, get_cache_scope/1, erase_cache_config/1]).
 -export([is_member_span/2, get_entry_span/2, put_entry_front/3, merge_entry/3]).
 -export([delete_entry/2, delete_pattern/2]).
 -export([purge_last_segment_and_rotate/1]).
 
--record(segmented_cache, {scope :: segmented_cache:scope(),
-                          name :: segmented_cache:name(),
-                          strategy = fifo :: segmented_cache:strategy(),
-                          entries_limit = infinity :: segmented_cache:entries_limit(),
-                          index :: atomics:atomics_ref(),
-                          segments :: tuple(),
-                          merger_fun :: merger_fun(term())}).
+-record(segmented_cache, {
+    scope :: segmented_cache:scope(),
+    name :: segmented_cache:name(),
+    strategy = fifo :: segmented_cache:strategy(),
+    entries_limit = infinity :: segmented_cache:entries_limit(),
+    index :: atomics:atomics_ref(),
+    segments :: tuple(),
+    merger_fun :: merger_fun(term())
+}).
 
 -type span() :: fun(() -> {term(), span_metadata()}).
 -type span_metadata() :: #{hit := boolean()}.
@@ -29,20 +37,28 @@
 -spec init_cache_config(segmented_cache:name(), segmented_cache:opts()) ->
     #{scope := segmented_cache:scope(), ttl := timeout()}.
 init_cache_config(Name, Opts0) ->
-    #{scope := Scope,
-      strategy := Strategy,
-      entries_limit := EntriesLimit,
-      segment_num := N,
-      ttl := TTL,
-      merger_fun := MergerFun} = Opts = assert_parameters(Opts0),
+    #{
+        scope := Scope,
+        strategy := Strategy,
+        entries_limit := EntriesLimit,
+        segment_num := N,
+        ttl := TTL,
+        merger_fun := MergerFun
+    } = Opts = assert_parameters(Opts0),
     SegmentOpts = ets_settings(Opts),
     SegmentsList = lists:map(fun(_) -> ets:new(undefined, SegmentOpts) end, lists:seq(1, N)),
     Segments = list_to_tuple(SegmentsList),
     Index = atomics:new(1, [{signed, false}]),
     atomics:put(Index, 1, 1),
-    Config = #segmented_cache{scope = Scope, name = Name, strategy = Strategy,
-                              index = Index, entries_limit = EntriesLimit,
-                              segments = Segments, merger_fun = MergerFun},
+    Config = #segmented_cache{
+        scope = Scope,
+        name = Name,
+        strategy = Strategy,
+        index = Index,
+        entries_limit = EntriesLimit,
+        segments = Segments,
+        merger_fun = MergerFun
+    },
     persist_cache_config(Name, Config),
     #{scope => Scope, ttl => TTL}.
 
@@ -70,33 +86,35 @@ persist_cache_config(Name, Config) ->
 -spec is_member_span(segmented_cache:name(), segmented_cache:key()) -> span().
 is_member_span(Name, Key) when is_atom(Name) ->
     fun() ->
-            Value = iterate_fun_in_tables(Name, Key, fun segmented_cache_callbacks:is_member_ets_fun/2),
-            {Value, #{hit => Value =:= true}}
+        Value = iterate_fun_in_tables(Name, Key, fun segmented_cache_callbacks:is_member_ets_fun/2),
+        {Value, #{hit => Value =:= true}}
     end.
 
 -spec get_entry_span(segmented_cache:name(), segmented_cache:key()) -> span().
 get_entry_span(Name, Key) when is_atom(Name) ->
     fun() ->
-            Value = iterate_fun_in_tables(Name, Key, fun segmented_cache_callbacks:get_entry_ets_fun/2),
-            {Value, #{hit => Value =/= not_found}}
+        Value = iterate_fun_in_tables(Name, Key, fun segmented_cache_callbacks:get_entry_ets_fun/2),
+        {Value, #{hit => Value =/= not_found}}
     end.
 
-%% @doc Atomically compare_and_swap an entry, attempt three times, post-check front insert
--spec put_entry_front(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) -> boolean().
+%% Atomically compare_and_swap an entry, attempt three times, post-check front insert
+-spec put_entry_front(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) ->
+    boolean().
 put_entry_front(Name, Key, Value) ->
     SegmentRecord = get_cache_config(Name),
     do_put_entry_front(SegmentRecord, Key, Value, 3).
 
--spec merge_entry(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) -> boolean().
+-spec merge_entry(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) ->
+    boolean().
 merge_entry(Name, Key, Value) when is_atom(Name) ->
     SegmentRecord = get_cache_config(Name),
     F = fun(EtsSegment, KKey) ->
-                MergerFun = SegmentRecord#segmented_cache.merger_fun,
-                case compare_and_swap(3, EtsSegment, KKey, Value, MergerFun) of
-                    true -> {stop, true};
-                    false -> {continue, false}
-                end
-        end,
+        MergerFun = SegmentRecord#segmented_cache.merger_fun,
+        case compare_and_swap(3, EtsSegment, KKey, Value, MergerFun) of
+            true -> {stop, true};
+            false -> {continue, false}
+        end
+    end,
     case iterate_fun_in_tables(Name, Key, F) of
         true -> true;
         false -> do_put_entry_front(SegmentRecord, Key, Value, 3)
@@ -110,14 +128,19 @@ delete_entry(Name, Key) when is_atom(Name) ->
 delete_pattern(Name, Pattern) when is_atom(Name) ->
     delete_request(Name, Pattern, pattern, fun segmented_cache_callbacks:delete_pattern_fun/2).
 
--spec delete_request(segmented_cache:name(), Key, entry | pattern, iterative_fun(Key, term())) ->
-    term() when Key :: segmented_cache:key().
+-spec delete_request(segmented_cache:name(), Key, Type, IterativeFun) -> term() when
+    Key :: segmented_cache:key(),
+    Type :: entry | pattern,
+    IterativeFun :: iterative_fun(Key, term()).
 delete_request(Name, Value, Type, Fun) ->
     try
         iterate_fun_in_tables(Name, Value, Fun)
-    catch Class:Reason ->
-              Metadata = #{name => Name, delete_type => Type, value => Value, class => Class, reason => Reason},
-              telemetry:execute([segmented_cache, Name, delete_error], #{}, Metadata)
+    catch
+        Class:Reason ->
+            Metadata = #{
+                name => Name, delete_type => Type, value => Value, class => Class, reason => Reason
+            },
+            telemetry:execute([segmented_cache, Name, delete_error], #{}, Metadata)
     end.
 
 %%====================================================================
@@ -125,16 +148,13 @@ delete_request(Name, Value, Type, Fun) ->
 %%====================================================================
 
 -spec iterate_fun_in_tables(segmented_cache:name(), Key, IterativeFun) -> Value when
-      IterativeFun :: iterative_fun(Key, Value).
+    IterativeFun :: iterative_fun(Key, Value).
 iterate_fun_in_tables(Name, Key, IterativeFun) ->
     SegmentRecord = get_cache_config(Name),
     Segments = SegmentRecord#segmented_cache.segments,
     Size = tuple_size(Segments),
     CurrentIndex = atomics:get(SegmentRecord#segmented_cache.index, 1),
-    LastTableToCheck = case CurrentIndex of
-                           1 -> Size;
-                           _ -> CurrentIndex - 1
-                       end,
+    LastTableToCheck = next(CurrentIndex, Size),
     case iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, CurrentIndex) of
         {not_found, Value} ->
             Value;
@@ -144,9 +164,10 @@ iterate_fun_in_tables(Name, Key, IterativeFun) ->
             Value
     end.
 
--spec iterate_fun_in_tables(IterativeFun, Key, tuple(), Int, Int, Int) ->
-    {not_found, Value} | {non_neg_integer(), Value}
-      when Int :: non_neg_integer(), IterativeFun :: iterative_fun(Key, Value).
+-spec iterate_fun_in_tables(IterativeFun, Key, tuple(), Int, Int, Int) -> Result when
+    Result :: {not_found, Value} | {non_neg_integer(), Value},
+    Int :: non_neg_integer(),
+    IterativeFun :: iterative_fun(Key, Value).
 % if we arrived to the last table we finish here
 iterate_fun_in_tables(IterativeFun, Key, Segments, _, LastTableToCheck, LastTableToCheck) ->
     EtsSegment = element(LastTableToCheck, Segments),
@@ -158,18 +179,22 @@ iterate_fun_in_tables(IterativeFun, Key, Segments, _, LastTableToCheck, LastTabl
 iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, Size) ->
     EtsSegment = element(Size, Segments),
     case IterativeFun(EtsSegment, Key) of
-        {stop, Value} -> {Size, Value};
-        {continue, _} -> iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, 1)
+        {stop, Value} ->
+            {Size, Value};
+        {continue, _} ->
+            iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, 1)
     end;
 % else we check the current table and if it fails we move forwards
 iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, Index) ->
     EtsSegment = element(Index, Segments),
     case IterativeFun(EtsSegment, Key) of
-        {stop, Value} -> {Index, Value};
-        {continue, _} -> iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, Index + 1)
+        {stop, Value} ->
+            {Index, Value};
+        {continue, _} ->
+            iterate_fun_in_tables(IterativeFun, Key, Segments, Size, LastTableToCheck, Index + 1)
     end.
 
-%% @doc Apply configured eviction strategy
+%% Apply configured eviction strategy
 %% Basically only lru when the record wasn't at the front needs action.
 %% For that, we first extract the whole record, then we attempt to put it at the front
 %% table atomically, and only then, delete the record found at the back: otherwise if
@@ -194,21 +219,29 @@ apply_strategy(lru, CurrentIndex, CurrentIndex, _Key, _SegmentRecord) ->
 apply_strategy(lru, _CurrentIndex, FoundIndex, Key, SegmentRecord) ->
     Segments = SegmentRecord#segmented_cache.segments,
     FoundInSegment = element(FoundIndex, Segments),
-    try [{_, Value}] = ets:lookup(FoundInSegment, Key),
+    try
+        [{_, Value}] = ets:lookup(FoundInSegment, Key),
         do_put_entry_front(SegmentRecord, Key, Value, 3)
-    catch _:_ -> false
+    catch
+        _:_ -> false
     end.
 
--spec do_put_entry_front(#segmented_cache{}, segmented_cache:key(), segmented_cache:value(), 0..3) ->
+-spec do_put_entry_front(config(), segmented_cache:key(), segmented_cache:value(), 0..3) ->
     boolean().
-do_put_entry_front(_, _, _, 0) -> false;
-do_put_entry_front(#segmented_cache{
-                      name = Name,
-                      entries_limit = EntriesLimit,
-                      index = Atomic,
-                      segments = Segments,
-                      merger_fun = MergerFun
-                     } = SegmentRecord, Key, Value, Retry) ->
+do_put_entry_front(_, _, _, 0) ->
+    false;
+do_put_entry_front(
+    #segmented_cache{
+        name = Name,
+        entries_limit = EntriesLimit,
+        index = Atomic,
+        segments = Segments,
+        merger_fun = MergerFun
+    } = SegmentRecord,
+    Key,
+    Value,
+    Retry
+) ->
     Index = atomics:get(Atomic, 1),
     FrontSegment = element(Index, Segments),
     case insert_new(FrontSegment, Key, Value, EntriesLimit, Name) of
@@ -249,22 +282,26 @@ post_insert_check_should_retry(true, _, _) -> true;
 % Insert failed, so it doesn't matter, just abort
 post_insert_check_should_retry(false, _, _) -> false.
 
--spec compare_and_swap(non_neg_integer(), ets:tid(), segmented_cache:key(), Value, merger_fun(Value)) ->
-    boolean().
+-spec compare_and_swap(non_neg_integer(), ets:tid(), Key, Value, MergerFun) -> boolean() when
+    Key :: segmented_cache:key(),
+    MergerFun :: merger_fun(Value).
 compare_and_swap(0, _EtsSegment, _Key, _Value, _MergerFun) ->
     false;
 compare_and_swap(Attempts, EtsSegment, Key, Value, MergerFun) ->
     case ets:lookup(EtsSegment, Key) of
         [{_, OldValue}] ->
             NewValue = MergerFun(OldValue, Value),
-            case ets:select_replace(EtsSegment, [{{Key, OldValue}, [], [{const, {Key, NewValue}}]}]) of
+            case
+                ets:select_replace(EtsSegment, [{{Key, OldValue}, [], [{const, {Key, NewValue}}]}])
+            of
                 1 -> true;
                 0 -> compare_and_swap(Attempts - 1, EtsSegment, Key, Value, MergerFun)
             end;
-        [] -> false
+        [] ->
+            false
     end.
 
-%% @doc Rotate the tables
+%% Rotate the tables
 %% Note that we must first empty the last table, and then rotate the index. If it was done
 %% in the opposite order, there's a chance a worker can insert an entry at the front just
 %% before the table is purged.
@@ -275,10 +312,7 @@ purge_last_segment_and_rotate(Name) ->
     Segments = SegmentRecord#segmented_cache.segments,
     Size = tuple_size(Segments),
     %% If Size was 1, Index would not change
-    NewIndex = case Index of
-                   1 -> Size;
-                   _ -> Index - 1
-               end,
+    NewIndex = next(Index, Size),
     TableToClear = element(NewIndex, Segments),
     ets:delete_all_objects(TableToClear),
     atomics:put(SegmentRecord#segmented_cache.index, 1, NewIndex),
@@ -286,49 +320,62 @@ purge_last_segment_and_rotate(Name) ->
 
 -spec assert_parameters(segmented_cache:opts()) -> segmented_cache:opts().
 assert_parameters(Opts0) when is_map(Opts0) ->
-    #{scope := Scope,
-      strategy := Strategy,
-      entries_limit := EntriesLimit,
-      segment_num := N,
-      ttl := TTL0,
-      merger_fun := MergerFun} = Opts = maps:merge(defaults(), Opts0),
-    TTL = case TTL0 of
-               infinity -> infinity;
-               {milliseconds, S} -> S;
-               {seconds, S} -> timer:seconds(S);
-               {minutes, M} -> timer:minutes(M);
-               {hours, H} -> timer:hours(H);
-               T when is_integer(T) -> timer:minutes(T)
-           end,
+    #{
+        scope := Scope,
+        strategy := Strategy,
+        entries_limit := EntriesLimit,
+        segment_num := N,
+        ttl := TTL0,
+        merger_fun := MergerFun
+    } = Opts = maps:merge(defaults(), Opts0),
+    TTL =
+        case TTL0 of
+            infinity -> infinity;
+            {milliseconds, S} -> S;
+            {seconds, S} -> timer:seconds(S);
+            {minutes, M} -> timer:minutes(M);
+            {hours, H} -> timer:hours(H);
+            T when is_integer(T) -> timer:minutes(T)
+        end,
     true = is_integer(N) andalso N > 0,
-    true = (EntriesLimit =:= infinity) orelse (is_integer(EntriesLimit) andalso EntriesLimit > 0),
-    true = (TTL =:= infinity) orelse (is_integer(TTL) andalso N > 0),
+    true = is_pos_int_or_infinity(EntriesLimit),
+    true = is_pos_int_or_infinity(TTL),
     true = (Strategy =:= fifo) orelse (Strategy =:= lru),
     true = is_function(MergerFun, 2),
     true = (undefined =/= whereis(Scope)),
     Opts#{ttl := TTL}.
 
-defaults() ->
-    #{scope => pg,
-      strategy => fifo,
-      entries_limit => infinity,
-      segment_num => 3,
-      ttl => {hours, 8},
-      merger_fun => fun segmented_cache_callbacks:default_merger_fun/2}.
+is_pos_int_or_infinity(Value) ->
+    (Value =:= infinity) orelse (is_integer(Value) andalso 0 < Value).
 
--if(?OTP_RELEASE >= 25).
+next(Index, Size) ->
+    case Index of
+        1 -> Size;
+        _ -> Index - 1
+    end.
+
+defaults() ->
+    #{
+        scope => pg,
+        strategy => fifo,
+        entries_limit => infinity,
+        segment_num => 3,
+        ttl => {hours, 8},
+        merger_fun => fun segmented_cache_callbacks:default_merger_fun/2
+    }.
+
 ets_settings(#{entries_limit := infinity}) ->
-    [set, public,
-     {read_concurrency, true},
-     {write_concurrency, auto}];
+    [
+        set,
+        public,
+        {read_concurrency, true},
+        {write_concurrency, auto},
+        {decentralized_counters, true}
+    ];
 ets_settings(#{entries_limit := _}) ->
-    [set, public,
-     {read_concurrency, true},
-     {write_concurrency, true}].
--else.
-ets_settings(_Opts) ->
-    [set, public,
-     {read_concurrency, true},
-     {write_concurrency, true},
-     {decentralized_counters, true}].
--endif.
+    [
+        set,
+        public,
+        {read_concurrency, true},
+        {write_concurrency, true}
+    ].

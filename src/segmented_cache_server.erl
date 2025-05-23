@@ -1,5 +1,10 @@
 -module(segmented_cache_server).
--moduledoc false.
+-if(?OTP_RELEASE >= 27).
+-define(MODULEDOC(Str), -moduledoc(Str)).
+-else.
+-define(MODULEDOC(Str), -compile([])).
+-endif.
+?MODULEDOC(false).
 
 -behaviour(gen_server).
 
@@ -10,10 +15,12 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -type request_content() :: term().
--record(cache_state, {scope :: segmented_cache:scope(),
-                      name :: segmented_cache:name(),
-                      ttl :: timeout(),
-                      timer_ref :: undefined | reference()}).
+-record(cache_state, {
+    scope :: segmented_cache:scope(),
+    name :: segmented_cache:name(),
+    ttl :: timeout(),
+    timer_ref :: undefined | reference()
+}).
 -type state() :: #cache_state{}.
 
 %%====================================================================
@@ -56,7 +63,10 @@ init({Name, Opts}) ->
 handle_call(_Msg, _From, State) ->
     {reply, ok, State}.
 
--spec handle_cast(term(), state()) -> {noreply, state()}.
+-spec handle_cast(Cast, state()) -> {noreply, state()} when
+    Cast ::
+        {delete_entry, segmented_cache:key()}
+        | {delete_pattern, ets:match_pattern()}.
 handle_cast({delete_entry, Key}, #cache_state{name = Name} = State) ->
     segmented_cache_helpers:delete_entry(Name, Key),
     {noreply, State};
