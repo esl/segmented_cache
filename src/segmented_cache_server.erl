@@ -49,6 +49,7 @@ request_delete_pattern(Name, Pattern) ->
 
 -spec init({segmented_cache:name(), segmented_cache:opts()}) -> {ok, state()}.
 init({Name, Opts}) ->
+    erlang:process_flag(trap_exit, true),
     #{scope := Scope, ttl := TTL} = segmented_cache_helpers:init_cache_config(Name, Opts),
     pg:join(Scope, Name, self()),
     case TTL of
@@ -76,13 +77,15 @@ handle_cast({delete_pattern, Pattern}, #cache_state{name = Name} = State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
--spec handle_info(any(), state()) -> {noreply, state()}.
+-spec handle_info(any(), state()) -> {noreply, state()} | {stop, term(), state()}.
 handle_info(purge, #cache_state{name = Name, ttl = TTL} = State) ->
     segmented_cache_helpers:purge_last_segment_and_rotate(Name),
     case TTL of
         infinity -> {noreply, State};
         _ -> {noreply, State#cache_state{timer_ref = erlang:send_after(TTL, self(), purge)}}
     end;
+handle_info({'EXIT', _, Reason}, State) ->
+    {stop, Reason, State};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
