@@ -24,9 +24,9 @@ is_member_ets_fun(EtsSegment, Key) ->
 -spec get_entry_ets_fun(ets:tid(), Key) -> {continue, not_found} | {stop, Value} when
     Key :: segmented_cache:key(), Value :: segmented_cache:value().
 get_entry_ets_fun(EtsSegment, Key) ->
-    case ets:lookup(EtsSegment, Key) of
-        [{_, Value}] -> {stop, Value};
-        [] -> {continue, not_found}
+    case ets:lookup_element(EtsSegment, Key, 2, '$not_found') of
+        '$not_found' -> {continue, not_found};
+        Value -> {stop, Value}
     end.
 
 -spec delete_entry_fun(ets:tid(), segmented_cache:key()) -> {continue, true}.
