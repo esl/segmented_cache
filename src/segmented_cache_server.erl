@@ -14,7 +14,7 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--type request_content() :: term().
+-type request_content() :: dynamic().
 -record(cache_state, {
     scope :: segmented_cache:scope(),
     name :: segmented_cache:name(),
@@ -77,7 +77,7 @@ handle_cast({delete_pattern, Pattern}, #cache_state{name = Name} = State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
--spec handle_info(any(), state()) -> {noreply, state()} | {stop, term(), state()}.
+-spec handle_info(dynamic(), state()) -> {noreply, state()} | {stop, term(), state()}.
 handle_info(purge, #cache_state{name = Name, ttl = TTL} = State) ->
     segmented_cache_helpers:purge_last_segment_and_rotate(Name),
     case TTL of

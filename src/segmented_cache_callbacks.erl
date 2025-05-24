@@ -40,6 +40,6 @@ delete_pattern_fun(EtsSegment, Pattern) ->
     {continue, true}.
 
 %% This merger simply discards the older value
--spec default_merger_fun(T, T) -> T when T :: term().
+-spec default_merger_fun(T, T) -> T when T :: dynamic().
 default_merger_fun(_OldValue, NewValue) ->
     NewValue.

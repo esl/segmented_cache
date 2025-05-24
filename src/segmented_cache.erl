@@ -28,7 +28,7 @@ For more information, see the README, and the function documentation.
     value => Key,
     delete_type => entry | pattern,
     class => throw | error | exit,
-    reason => term()
+    reason => dynamic()
 }.
 
 ?DOC("`m:pg` scope for cache coordination across distribution.").
@@ -38,9 +38,9 @@ For more information, see the README, and the function documentation.
 ?DOC("Strategy for cache eviction.").
 -type strategy() :: fifo | lru.
 ?DOC("Dynamic type of _keys_ from cache clients.").
--type key() :: term().
+-type key() :: dynamic().
 ?DOC("Dynamic type of _values_ from cache clients.").
--type value() :: term().
+-type value() :: dynamic().
 ?DOC("Maximum number of entries per segment. When filled, rotation is ensued.").
 -type entries_limit() :: infinity | non_neg_integer().
 ?DOC("Merging function to use for resolving conflicts").
@@ -52,7 +52,7 @@ For more information, see the README, and the function documentation.
     entries_limit => entries_limit(),
     segment_num => non_neg_integer(),
     ttl => timeout() | {erlang:time_unit(), non_neg_integer()},
-    merger_fun => merger_fun(term())
+    merger_fun => merger_fun(dynamic())
 }.
 
 -export_type([

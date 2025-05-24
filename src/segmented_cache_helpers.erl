@@ -21,10 +21,10 @@
     entries_limit = infinity :: segmented_cache:entries_limit(),
     index :: atomics:atomics_ref(),
     segments :: tuple(),
-    merger_fun :: merger_fun(term())
+    merger_fun :: merger_fun(dynamic())
 }).
 
--type span() :: fun(() -> {term(), span_metadata()}).
+-type span() :: fun(() -> {dynamic(), span_metadata()}).
 -type span_metadata() :: #{hit := boolean()}.
 -type merger_fun(Value) :: fun((Value, Value) -> Value).
 -type iterative_fun(Key, Value) :: fun((ets:tid(), Key) -> {continue | stop, Value}).
@@ -128,10 +128,10 @@ delete_entry(Name, Key) when is_atom(Name) ->
 delete_pattern(Name, Pattern) when is_atom(Name) ->
     delete_request(Name, Pattern, pattern, fun segmented_cache_callbacks:delete_pattern_fun/2).
 
--spec delete_request(segmented_cache:name(), Key, Type, IterativeFun) -> term() when
+-spec delete_request(segmented_cache:name(), Key, Type, IterativeFun) -> dynamic() when
     Key :: segmented_cache:key(),
     Type :: entry | pattern,
-    IterativeFun :: iterative_fun(Key, term()).
+    IterativeFun :: iterative_fun(Key, dynamic()).
 delete_request(Name, Value, Type, Fun) ->
     try
         iterate_fun_in_tables(Name, Value, Fun)
