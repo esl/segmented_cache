@@ -47,6 +47,7 @@ For more information, see the README, and the function documentation.
 -type merger_fun(Value) :: fun((Value, Value) -> Value).
 ?DOC("Configuration values for the cache.").
 -type opts() :: #{
+    prefix => telemetry:event_name(),
     scope => scope(),
     strategy => strategy(),
     entries_limit => entries_limit(),
@@ -94,6 +95,8 @@ Start and link a cache entity in the local node.
 and an entry in persistent_term will be created and the worker will join a pg group of
 the same name.
 `Opts` is a map containing the configuration.
+- `prefix` is a `telemetry` event name to prefix events raised by this library.
+    Defaults to `[segmented_cache, Name, request]`.
 - `scope` is a `pg` scope. Defaults to `pg`.
 - `strategy` can be fifo or lru. Default is `fifo`.
 - `segment_num` is the number of segments for the cache. Default is `3`
@@ -110,27 +113,25 @@ start_link(Name, Opts) when is_atom(Name), is_map(Opts) ->
 Check if Key is cached.
 
 Raises a telemetry span:
-- name: `[segmented_cache, Name, request, _]`
+- name: `Prefix`
 - start metadata: `#{name => atom()}`
 - stop metadata: `t:hit/0`
 """).
 -spec is_member(name(), key()) -> boolean().
 is_member(Name, Key) when is_atom(Name) ->
-    Span = segmented_cache_helpers:is_member_span(Name, Key),
-    telemetry:span([segmented_cache, Name, request], #{name => Name, type => is_member}, Span).
+    segmented_cache_helpers:is_member(Name, Key).
 
 ?DOC("""
 Get the entry for Key in cache.
 
 Raises telemetry span:
-- name: `[segmented_cache, Name, request, _]`
+- name: `Prefix`
 - start metadata: `#{name => atom()}`
 - stop metadata: `t:hit/0`
 """).
 -spec get_entry(name(), key()) -> value() | not_found.
 get_entry(Name, Key) when is_atom(Name) ->
-    Span = segmented_cache_helpers:get_entry_span(Name, Key),
-    telemetry:span([segmented_cache, Name, request], #{name => Name, type => get_entry}, Span).
+    segmented_cache_helpers:get_entry(Name, Key).
 
 ?DOC("""
 Add an entry to the first table in the segments.
@@ -182,7 +183,7 @@ merge_entry(Name, Key, Value) when is_atom(Name) ->
 Delete an entry in all ets segments.
 
 Might raise a telemetry error if the request fails:
-- name: `[segmented_cache, Name, delete_error]`
+- name: `Prefix ++ [delete_error]`
 - measurements: `#{}`
 - metadata: `t:delete_error/1`
 """).

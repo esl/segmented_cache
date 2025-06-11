@@ -10,13 +10,15 @@
 -compile({inline, [next/2]}).
 
 -export([init_cache_config/2, get_cache_scope/1, erase_cache_config/1]).
--export([is_member_span/2, get_entry_span/2, put_entry_front/3, merge_entry/3]).
+-export([is_member/2, get_entry/2]).
+-export([put_entry_front/3, merge_entry/3]).
 -export([delete_entry/2, delete_pattern/2]).
 -export([purge_last_segment_and_rotate/1]).
 
 -record(segmented_cache, {
     scope :: segmented_cache:scope(),
     name :: segmented_cache:name(),
+    telemetry_name :: [segmented_cache:name()],
     strategy = fifo :: segmented_cache:strategy(),
     entries_limit = infinity :: segmented_cache:entries_limit(),
     index :: atomics:atomics_ref(),
@@ -24,8 +26,6 @@
     merger_fun :: merger_fun(dynamic())
 }).
 
--type span() :: fun(() -> {dynamic(), span_metadata()}).
--type span_metadata() :: #{hit := boolean()}.
 -type merger_fun(Value) :: fun((Value, Value) -> Value).
 -type iterative_fun(Key, Value) :: fun((ets:tid(), Key) -> {continue | stop, Value}).
 -type config() :: #segmented_cache{}.
@@ -43,8 +43,9 @@ init_cache_config(Name, Opts0) ->
         entries_limit := EntriesLimit,
         segment_num := N,
         ttl := TTL,
-        merger_fun := MergerFun
-    } = Opts = assert_parameters(Opts0),
+        merger_fun := MergerFun,
+        prefix := TelemetryEventName
+    } = Opts = assert_parameters(Name, Opts0),
     SegmentOpts = ets_settings(Opts),
     SegmentsList = lists:map(fun(_) -> ets:new(undefined, SegmentOpts) end, lists:seq(1, N)),
     Segments = list_to_tuple(SegmentsList),
@@ -52,6 +53,7 @@ init_cache_config(Name, Opts0) ->
     atomics:put(Index, 1, 1),
     Config = #segmented_cache{
         scope = Scope,
+        telemetry_name = TelemetryEventName,
         name = Name,
         strategy = Strategy,
         index = Index,
@@ -83,19 +85,28 @@ persist_cache_config(Name, Config) ->
 %% ETS checks
 %%====================================================================
 
--spec is_member_span(segmented_cache:name(), segmented_cache:key()) -> span().
-is_member_span(Name, Key) when is_atom(Name) ->
-    fun() ->
-        Value = iterate_fun_in_tables(Name, Key, fun segmented_cache_callbacks:is_member_ets_fun/2),
-        {Value, #{hit => Value =:= true}}
-    end.
+-spec is_member(segmented_cache:name(), segmented_cache:key()) -> boolean().
+is_member(Name, Key) when is_atom(Name) ->
+    #segmented_cache{telemetry_name = Prefix} = SegmentRecord = get_cache_config(Name),
+    Span = fun() ->
+        Value = iterate_fun_in_tables(
+            SegmentRecord, Key, fun segmented_cache_callbacks:is_member_ets_fun/2
+        ),
+        {Value, #{name => Name, type => is_member, hit => Value =:= true}}
+    end,
+    telemetry:span(Prefix, #{name => Name, type => is_member}, Span).
 
--spec get_entry_span(segmented_cache:name(), segmented_cache:key()) -> span().
-get_entry_span(Name, Key) when is_atom(Name) ->
-    fun() ->
-        Value = iterate_fun_in_tables(Name, Key, fun segmented_cache_callbacks:get_entry_ets_fun/2),
-        {Value, #{hit => Value =/= not_found}}
-    end.
+-spec get_entry(segmented_cache:name(), segmented_cache:key()) ->
+    segmented_cache:value() | not_found.
+get_entry(Name, Key) when is_atom(Name) ->
+    #segmented_cache{telemetry_name = Prefix} = SegmentRecord = get_cache_config(Name),
+    Span = fun() ->
+        Value = iterate_fun_in_tables(
+            SegmentRecord, Key, fun segmented_cache_callbacks:get_entry_ets_fun/2
+        ),
+        {Value, #{name => Name, type => get_entry, hit => Value =/= not_found}}
+    end,
+    telemetry:span(Prefix, #{name => Name, type => get_entry}, Span).
 
 %% Atomically compare_and_swap an entry, attempt three times, post-check front insert
 -spec put_entry_front(segmented_cache:name(), segmented_cache:key(), segmented_cache:value()) ->
@@ -115,7 +126,7 @@ merge_entry(Name, Key, Value) when is_atom(Name) ->
             false -> {continue, false}
         end
     end,
-    case iterate_fun_in_tables(Name, Key, F) of
+    case iterate_fun_in_tables(SegmentRecord, Key, F) of
         true -> true;
         false -> do_put_entry_front(SegmentRecord, Key, Value, 3)
     end.
@@ -133,24 +144,24 @@ delete_pattern(Name, Pattern) when is_atom(Name) ->
     Type :: entry | pattern,
     IterativeFun :: iterative_fun(Key, dynamic()).
 delete_request(Name, Value, Type, Fun) ->
+    #segmented_cache{telemetry_name = Prefix} = SegmentRecord = get_cache_config(Name),
     try
-        iterate_fun_in_tables(Name, Value, Fun)
+        iterate_fun_in_tables(SegmentRecord, Value, Fun)
     catch
         Class:Reason ->
             Metadata = #{
                 name => Name, delete_type => Type, value => Value, class => Class, reason => Reason
             },
-            telemetry:execute([segmented_cache, Name, delete_error], #{}, Metadata)
+            telemetry:execute(Prefix ++ [delete_error], #{}, Metadata)
     end.
 
 %%====================================================================
 %% Internals
 %%====================================================================
 
--spec iterate_fun_in_tables(segmented_cache:name(), Key, IterativeFun) -> Value when
+-spec iterate_fun_in_tables(config(), Key, IterativeFun) -> Value when
     IterativeFun :: iterative_fun(Key, Value).
-iterate_fun_in_tables(Name, Key, IterativeFun) ->
-    SegmentRecord = get_cache_config(Name),
+iterate_fun_in_tables(SegmentRecord, Key, IterativeFun) ->
     Segments = SegmentRecord#segmented_cache.segments,
     Size = tuple_size(Segments),
     CurrentIndex = atomics:get(SegmentRecord#segmented_cache.index, 1),
@@ -318,8 +329,8 @@ purge_last_segment_and_rotate(Name) ->
     atomics:put(SegmentRecord#segmented_cache.index, 1, NewIndex),
     NewIndex.
 
--spec assert_parameters(segmented_cache:opts()) -> segmented_cache:opts().
-assert_parameters(Opts0) when is_map(Opts0) ->
+-spec assert_parameters(segmented_cache:name(), segmented_cache:opts()) -> segmented_cache:opts().
+assert_parameters(Name, Opts0) when is_map(Opts0) ->
     #{
         scope := Scope,
         strategy := Strategy,
@@ -328,6 +339,8 @@ assert_parameters(Opts0) when is_map(Opts0) ->
         ttl := TTL0,
         merger_fun := MergerFun
     } = Opts = maps:merge(defaults(), Opts0),
+    TelemetryEventName = maps:get(prefix, Opts0, [segmented_cache, Name, request]),
+    true = is_list(TelemetryEventName),
     TTL =
         case TTL0 of
             infinity -> infinity;
@@ -343,7 +356,7 @@ assert_parameters(Opts0) when is_map(Opts0) ->
     true = (Strategy =:= fifo) orelse (Strategy =:= lru),
     true = is_function(MergerFun, 2),
     true = (undefined =/= whereis(Scope)),
-    Opts#{ttl := TTL}.
+    Opts#{ttl := TTL, prefix => TelemetryEventName}.
 
 is_pos_int_or_infinity(Value) ->
     (Value =:= infinity) orelse (is_integer(Value) andalso 0 < Value).

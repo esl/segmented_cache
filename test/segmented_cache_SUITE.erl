@@ -19,6 +19,7 @@
 -include_lib("proper/include/proper.hrl").
 
 -define(CACHE_NAME, test).
+-define(CACHE_NAME_B, [custom_test, lru]).
 -define(CMD_MODULE, segmented_cache_proper_commands).
 
 all() ->
@@ -45,6 +46,7 @@ groups() ->
             put_entry_wait_and_check_false
         ]},
         {lru, [sequence], [
+            get_entry_with_custom_prefix,
             put_entry_and_verify_it_stays,
             put_entry_and_verify_it_stays_under_load,
             stateful_property
@@ -58,9 +60,13 @@ init_per_suite(Config) ->
     ct:pal("Online schedulers ~p~n", [erlang:system_info(schedulers_online)]),
     application:ensure_all_started(telemetry),
     cnt_pt_new(?CACHE_NAME),
-    ok = telemetry:attach(
+    cnt_pt_new(?CACHE_NAME_B),
+    ok = telemetry:attach_many(
         <<"cache-request-handler">>,
-        [segmented_cache, ?CACHE_NAME, request, stop],
+        [
+            [segmented_cache, ?CACHE_NAME, request, stop],
+            ?CACHE_NAME_B ++ [stop]
+        ],
         fun ?MODULE:handle_event/4,
         []
     ),
@@ -68,15 +74,17 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
-    print_and_restart_counters(),
+    print_and_restart_counters(?CACHE_NAME),
+    print_and_restart_counters(?CACHE_NAME_B),
     ok.
 
 %%%===================================================================
 %%% Group specific setup/teardown
 %%%===================================================================
 init_per_group(lru, Config) ->
-    print_and_restart_counters(),
+    print_and_restart_counters(?CACHE_NAME_B),
     Opts = #{
+        prefix => ?CACHE_NAME_B,
         strategy => lru,
         segment_num => 2,
         ttl => {milliseconds, 100}
@@ -84,7 +92,7 @@ init_per_group(lru, Config) ->
     {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, Opts),
     [{cleaner, Cleaner} | Config];
 init_per_group(short_fifo, Config) ->
-    print_and_restart_counters(),
+    print_and_restart_counters(?CACHE_NAME),
     Opts = #{
         strategy => fifo,
         segment_num => 2,
@@ -93,7 +101,7 @@ init_per_group(short_fifo, Config) ->
     {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, Opts),
     [{cleaner, Cleaner} | Config];
 init_per_group(cache_limits, Config) ->
-    print_and_restart_counters(),
+    print_and_restart_counters(?CACHE_NAME),
     Opts = #{
         entries_limit => 1,
         strategy => fifo,
@@ -103,7 +111,7 @@ init_per_group(cache_limits, Config) ->
     {ok, Cleaner} = segmented_cache:start(?CACHE_NAME, Opts),
     [{cleaner, Cleaner} | Config];
 init_per_group(_Groupname, Config) ->
-    print_and_restart_counters(),
+    print_and_restart_counters(?CACHE_NAME),
     {ok, Cleaner} = segmented_cache:start(?CACHE_NAME),
     [{cleaner, Cleaner} | Config].
 
@@ -118,7 +126,7 @@ init_per_testcase(TestCase, Config) when
     TestCase =:= put_entry_and_verify_it_stays;
     TestCase =:= put_entry_and_verify_it_stays_under_load
 ->
-    print_and_restart_counters(),
+    print_and_restart_counters(?CACHE_NAME_B),
     Config;
 init_per_testcase(_TestCase, Config) ->
     Config.
@@ -226,6 +234,18 @@ put_entry_wait_and_check_false(_) ->
     ),
     run_prop(?FUNCTION_NAME, Prop).
 
+get_entry_with_custom_prefix(_) ->
+    Prop = ?FORALL(
+        {Key0, Value},
+        {non_empty(binary()), union([char(), binary(), integer()])},
+        begin
+            Key = {Key0, make_ref()},
+            segmented_cache:put_entry(?CACHE_NAME, Key, Value),
+            Value =:= segmented_cache:get_entry(?CACHE_NAME, Key)
+        end
+    ),
+    run_prop(?FUNCTION_NAME, Prop).
+
 put_entry_and_verify_it_stays(_) ->
     Prop = ?FORALL(
         {Key0, Value},
@@ -266,7 +286,7 @@ put_entry_and_verify_it_stays_under_load(_) ->
         end
     ),
     run_prop(?FUNCTION_NAME, Prop, 10_000, 128),
-    {Hits, Misses} = print_and_restart_counters(),
+    {Hits, Misses} = print_and_restart_counters(?CACHE_NAME_B),
     ct:pal("Hits ~p; Misses ~p~n", [Hits, Misses]),
     Total = Hits + Misses,
     case Misses / Total < 0.001 of
@@ -341,6 +361,11 @@ handle_event([segmented_cache, CacheName, request, stop], _, #{hit := Hit}, _) -
     case Hit of
         true -> cnt_pt_incr_hits(CacheName);
         false -> cnt_pt_incr_misses(CacheName)
+    end;
+handle_event([custom_test, lru, stop], _, #{hit := Hit}, _) ->
+    case Hit of
+        true -> cnt_pt_incr_hits(?CACHE_NAME_B);
+        false -> cnt_pt_incr_misses(?CACHE_NAME_B)
     end.
 
 cnt_pt_new(Counter) ->
@@ -358,9 +383,9 @@ cnt_pt_read_hits(Counter) ->
 cnt_pt_read_misses(Counter) ->
     counters:get(persistent_term:get({?MODULE, Counter}), 2).
 
-print_and_restart_counters() ->
-    Hits = cnt_pt_read_hits(?CACHE_NAME),
-    Misses = cnt_pt_read_misses(?CACHE_NAME),
-    counters:put(persistent_term:get({?MODULE, ?CACHE_NAME}), 1, 0),
-    counters:put(persistent_term:get({?MODULE, ?CACHE_NAME}), 2, 0),
+print_and_restart_counters(CacheName) ->
+    Hits = cnt_pt_read_hits(CacheName),
+    Misses = cnt_pt_read_misses(CacheName),
+    counters:put(persistent_term:get({?MODULE, CacheName}), 1, 0),
+    counters:put(persistent_term:get({?MODULE, CacheName}), 2, 0),
     {Hits, Misses}.
