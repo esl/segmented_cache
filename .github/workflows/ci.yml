@@ -27,9 +27,8 @@ jobs:
         with:
           path: |
             _build
-          key: ${{ runner.os }}-build-${{ matrix.otp }}-${{ hashFiles(format('rebar.lock')) }}-1
-          restore-keys: |
-            ${{ runner.os }}-build-${{ matrix.otp }}-1-
+          key: ${{ runner.os }}-build-${{ matrix.otp }}-${{ hashFiles(format('rebar.lock')) }}
+          restore-keys: ${{ runner.os }}-build-${{ matrix.otp }}-
       - run: rebar3 compile
       - run: rebar3 ct
       - run: rebar3 fmt --check
