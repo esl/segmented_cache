@@ -92,7 +92,7 @@ is_member(Name, Key) when is_atom(Name) ->
         Value = iterate_fun_in_tables(
             SegmentRecord, Key, fun segmented_cache_callbacks:is_member_ets_fun/2
         ),
-        {Value, #{name => Name, type => is_member, hit => Value =:= true}}
+        {Value, #{name => Name, type => is_member, hit => Value}}
     end,
     telemetry:span(Prefix, #{name => Name, type => is_member}, Span).
 
